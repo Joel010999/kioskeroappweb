@@ -6,7 +6,12 @@ import {
   supplyModes,
   type SupplyMode,
 } from "@/server/supply/branch-supply-rules";
+import {
+  supplyEvidenceFilters,
+  type SupplyEvidence,
+} from "@/server/supply/supply-evidence";
 import { getAuthorizedScope } from "@/server/auth/scope";
+import { getSourceForBranch } from "@/server/auth/sources";
 import { canConfirmReplenishment } from "@/server/auth/policies";
 import { ForbiddenError } from "@/server/auth/errors";
 import { apiResponse } from "../dashboard/_shared";
@@ -27,15 +32,19 @@ export async function GET(request: Request) {
       throw new ForbiddenError();
     const { limit, page, offset } = parsePagination(params);
     const mode = params.get("supply_mode");
+    const evidence = params.get("evidence");
     if (mode && !(supplyModes as readonly string[]).includes(mode))
       throw new RequestValidationError("supply_mode is not valid.");
+    if (evidence && !(supplyEvidenceFilters as readonly string[]).includes(evidence))
+      throw new RequestValidationError("evidence is not valid.");
     return {
       ...(await listSupplyRules(scope, {
         search: parseSearch(params.get("search")),
         mode: mode as SupplyMode | undefined,
+        evidence: evidence as SupplyEvidence | undefined,
         limit,
         offset,
-      })),
+      }, await getSourceForBranch(scope.organizationId ?? context.organizationId, 1))),
       page,
       limit,
     };
