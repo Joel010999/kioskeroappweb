@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { OperationsNavigation } from "@/features/navigation/operations-navigation";
 
 type Status =
   | "SUGGESTION_AVAILABLE"
@@ -364,19 +365,7 @@ export function ReplenishmentReviewClient({
             MONICA<span className="brand-sub">Panel de operación</span>
           </span>
         </Link>
-        <nav aria-label="Navegación">
-          <Link href="/dashboard">Resumen</Link>
-          <Link href="/replenishment">Validación</Link>
-          <Link className="active" href="/replenishment/review">
-            Reposición semanal
-          </Link>
-          <Link href="/supply-rules">Abastecimiento</Link>
-          <Link href="/orders">Pedidos</Link>
-        </nav>
-        <div className="branch">
-          <span className="status-dot" />
-          Revisión operativa
-        </div>
+        <OperationsNavigation role="PV" branchId={authorizedBranchId} />
       </header>
       <section className="review-heading">
         <div>
@@ -398,8 +387,9 @@ export function ReplenishmentReviewClient({
         <label>
           <span>Punto de venta</span>
           <select value={branchId} disabled>
-            <option value="2">PV1</option>
-            <option value="3">PV2</option>
+            <option value={branchId}>
+              {authorizedBranchId === 2 ? "PV1" : "PV2"}
+            </option>
           </select>
         </label>
         <label>

@@ -1,5 +1,12 @@
 import { SuggestionsClient } from "@/features/orders/suggestions-client";
+import { getAuthorizedScope } from "@/server/auth/scope";
+import { canConfirmReplenishment } from "@/server/auth/policies";
+import { ForbiddenError } from "@/server/auth/errors";
 
-export default function SuggestionsPage() {
-  return <SuggestionsClient />;
+export const dynamic = "force-dynamic";
+
+export default async function SuggestionsPage() {
+  const { context, scope } = await getAuthorizedScope(new URLSearchParams());
+  if (!canConfirmReplenishment(context, scope.branchId)) throw new ForbiddenError();
+  return <SuggestionsClient branchId={scope.branchId} />;
 }

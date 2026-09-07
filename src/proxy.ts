@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const AUTH_SESSION_COOKIE = "monica_session";
-const protectedPrefixes = ["/dashboard", "/replenishment", "/orders"];
+const protectedPrefixes = ["/dashboard", "/replenishment", "/orders", "/supply-rules"];
 
 export function proxy(request: NextRequest) {
   const isProtected = protectedPrefixes.some((prefix) => request.nextUrl.pathname === prefix || request.nextUrl.pathname.startsWith(`${prefix}/`));
@@ -9,4 +9,4 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/dashboard/:path*", "/replenishment/:path*", "/orders/:path*"] };
+export const config = { matcher: ["/dashboard/:path*", "/replenishment/:path*", "/orders/:path*", "/supply-rules/:path*"] };

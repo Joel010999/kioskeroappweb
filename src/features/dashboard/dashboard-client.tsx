@@ -78,8 +78,7 @@ function TrendChart({ points, granularity }: { points: TimeseriesPoint[]; granul
   </svg><div className="chart-labels"><span>{points[0].date}</span><span>{points.at(-1)?.date}</span></div></div>;
 }
 
-export function DashboardClient({ branchName }: { branchName: string }) {
-  const dashboardScope = { branchName };
+export function DashboardClient({ branchName, warehouse }: { branchName: string; warehouse: boolean }) {
   const [period, setPeriod] = useState<Period>(() => periodFor("month"));
   const [granularity, setGranularity] = useState<Granularity>("day");
   const [overview, setOverview] = useState<Resource<Overview>>(initial);
@@ -117,10 +116,23 @@ export function DashboardClient({ branchName }: { branchName: string }) {
   const reviewStock = () => { setStockSearch(""); setPage(1); document.getElementById("stock")?.scrollIntoView({ behavior: "smooth", block: "start" }); };
 
   return <main className="dashboard-shell">
-    <header className="topbar"><a className="brand" href="/dashboard" aria-label="Dashboard de Mónica"><span className="brand-mark">M</span><span>MONICA<span className="brand-sub">Panel de operación</span></span></a><nav aria-label="Secciones"><a className="active" href="#overview">Resumen</a><a href="#evolucion">Evolución</a><a href="#productos">Productos</a><a href="#stock">Stock</a><a href="/orders/suggestions">Sugerencias</a></nav><div className="branch"><span className="status-dot" />{dashboardScope.branchName}</div><button className={`refresh ${isRefreshing ? "is-refreshing" : ""}`} onClick={refresh} disabled={isRefreshing} aria-label="Actualizar datos" aria-live="polite"><Icon name="refresh" /> <span>{isRefreshing ? "Actualizando" : "Actualizar"}</span></button></header>
+    <header className="topbar"><a className="brand" href="/dashboard" aria-label="Dashboard de Mónica"><span className="brand-mark">M</span><span>MONICA<span className="brand-sub">Panel de operación</span></span></a><nav aria-label="Secciones"><a className="active" href="#overview">Resumen</a><a href="#evolucion">Evolución</a><a href="#productos">Productos</a><a href="#stock">Stock</a>{warehouse ? <a href="/orders/warehouse">Operacion</a> : <a href="/orders/suggestions">Sugerencias</a>}</nav><div className="branch"><span className="status-dot" />{branchName}</div><button className={`refresh ${isRefreshing ? "is-refreshing" : ""}`} onClick={refresh} disabled={isRefreshing} aria-label="Actualizar datos" aria-live="polite"><Icon name="refresh" /> <span>{isRefreshing ? "Actualizando" : "Actualizar"}</span></button></header>
 
-    <section className="period-bar" aria-label="Selector de período"><div><p className="page-context">Dashboard de Mónica · {dashboardScope.branchName}</p><h1>Estado de la operación</h1><p>Ventas, disponibilidad y datos de una misma jornada de decisión.</p>{activeOverview?.last_updated_at && <span className="last-updated">Actualizado {dateTime.format(new Date(activeOverview.last_updated_at))}</span>}</div><div className="period-controls"><label className="select-wrap"><Icon name="calendar" size={16} /><span className="sr-only">Período rápido</span><select value={period.label} onChange={(event) => applyPreset(Object.entries({ today: "Hoy", yesterday: "Ayer", week: "Últimos 7 días", month: "Últimos 30 días", "current-month": "Mes actual", "previous-month": "Mes anterior", year: "Año actual", custom: "Personalizado" }).find(([, value]) => value === event.target.value)?.[0] ?? "custom")}><option>Hoy</option><option>Ayer</option><option>Últimos 7 días</option><option>Últimos 30 días</option><option>Mes actual</option><option>Mes anterior</option><option>Año actual</option><option>Personalizado</option></select></label><div className="date-pair"><label className="date-input"><span>Desde</span><input type="date" value={period.from} onChange={(event) => setPeriod((current) => ({ ...current, from: event.target.value, to: event.target.value > current.to ? event.target.value : current.to, label: "Personalizado" }))} /></label><span>→</span><label className="date-input"><span>Hasta</span><input type="date" value={period.to} min={period.from} onChange={(event) => setPeriod((current) => ({ ...current, to: event.target.value < current.from ? current.from : event.target.value, label: "Personalizado" }))} /></label></div></div></section>
+    <section className="period-bar" aria-label="Selector de período"><div><p className="page-context">Dashboard de Mónica · {branchName}</p><h1>Estado de la operación</h1><p>Ventas, disponibilidad y datos de una misma jornada de decisión.</p>{activeOverview?.last_updated_at && <span className="last-updated">Actualizado {dateTime.format(new Date(activeOverview.last_updated_at))}</span>}</div><div className="period-controls"><label className="select-wrap"><Icon name="calendar" size={16} /><span className="sr-only">Período rápido</span><select value={period.label} onChange={(event) => applyPreset(Object.entries({ today: "Hoy", yesterday: "Ayer", week: "Últimos 7 días", month: "Últimos 30 días", "current-month": "Mes actual", "previous-month": "Mes anterior", year: "Año actual", custom: "Personalizado" }).find(([, value]) => value === event.target.value)?.[0] ?? "custom")}><option>Hoy</option><option>Ayer</option><option>Últimos 7 días</option><option>Últimos 30 días</option><option>Mes actual</option><option>Mes anterior</option><option>Año actual</option><option>Personalizado</option></select></label><div className="date-pair"><label className="date-input"><span>Desde</span><input type="date" value={period.from} onChange={(event) => setPeriod((current) => ({ ...current, from: event.target.value, to: event.target.value > current.to ? event.target.value : current.to, label: "Personalizado" }))} /></label><span>→</span><label className="date-input"><span>Hasta</span><input type="date" value={period.to} min={period.from} onChange={(event) => setPeriod((current) => ({ ...current, to: event.target.value < current.from ? current.from : event.target.value, label: "Personalizado" }))} /></label></div></div></section>
 
+    <nav className="dashboard-operation-nav" aria-label="Operación">
+      {warehouse ? (
+        <a href="/orders/warehouse">Operación de depósito</a>
+      ) : (
+        <>
+          <a href="/replenishment">Reposición semanal</a>
+          <a href="/replenishment/review">Revisar solicitud</a>
+          <a href="/orders/suggestions">Sugerencias V1</a>
+          <a href="/supply-rules">Abastecimiento</a>
+          <a href="/orders">Pedidos</a>
+        </>
+      )}
+    </nav>
     <section id="overview" className="signal-grid" aria-label="Indicadores principales">
       <Metric featured label="Unidades netas" value={activeOverview ? periodIsEmpty ? "—" : units.format(activeOverview.net_units) : ""} note={periodIsEmpty ? "No hay movimientos en este período" : `${period.label} · VT suma, IN resta`} icon="trend" loading={overview.loading} />
       <Metric label="Movimientos" value={activeOverview ? periodIsEmpty ? "—" : number.format(activeOverview.movements) : ""} note={periodIsEmpty ? "Sin actividad registrada" : "actividad registrada"} icon="pulse" loading={overview.loading} />

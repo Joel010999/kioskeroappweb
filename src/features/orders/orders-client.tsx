@@ -3,6 +3,10 @@
 
 import { useEffect, useState } from "react";
 import { activityActorLabel } from "./activity";
+import {
+  branchDisplayName,
+  OperationsNavigation,
+} from "@/features/navigation/operations-navigation";
 
 type Status =
   | "DRAFT"
@@ -111,30 +115,10 @@ function Header({
           MONICA<span className="brand-sub">Panel de operacion</span>
         </span>
       </a>
-      <nav>
-        <a href="/dashboard">Resumen</a>
-        {active === "orders" && (
-          <>
-            <a href="/orders/suggestions">Sugerencias</a>
-            <a className="active" href="/orders">
-              Pedidos
-            </a>
-          </>
-        )}
-        {active === "warehouse" && (
-          <a className="active" href="/orders/warehouse">
-            Operacion de deposito
-          </a>
-        )}
-      </nav>
-      <div className="branch">
-        <span className="status-dot" />
-        {active === "warehouse"
-          ? "DEPOSITO"
-          : branchId
-            ? `PV${branchId}`
-            : "Punto autorizado"}
-      </div>
+      <OperationsNavigation
+        role={active === "warehouse" ? "WAREHOUSE" : "PV"}
+        branchId={active === "warehouse" ? 1 : branchId ?? 0}
+      />
     </header>
   );
 }
@@ -198,7 +182,10 @@ export function OrdersClient({
   const pages = Math.max(1, Math.ceil(total / 20));
   return (
     <main className={`orders-shell ${warehouse ? "warehouse-shell" : ""}`}>
-      <Header active={warehouse ? "warehouse" : "orders"} />
+      <Header
+        active={warehouse ? "warehouse" : "orders"}
+        branchId={branchId}
+      />
       <section className="orders-intro">
         <div>
           <p className="page-context">
@@ -296,14 +283,22 @@ export function OrdersClient({
         </label>
         <label className="filter-select">
           <span>PV origen</span>
-          <select
-            value={origin}
-            onChange={(event) => reset(setOrigin, event.target.value)}
-          >
-            {warehouse && <option value="">PV1 y PV2</option>}
-            <option value="2">PV1</option>
-            <option value="3">PV2</option>
-          </select>
+          {warehouse ? (
+            <select
+              value={origin}
+              onChange={(event) => reset(setOrigin, event.target.value)}
+            >
+              <option value="">PV1 y PV2</option>
+              <option value="2">PV1</option>
+              <option value="3">PV2</option>
+            </select>
+          ) : (
+            <select value={origin} disabled>
+              <option value={String(branchId)}>
+                {branchDisplayName(branchId, "PV")}
+              </option>
+            </select>
+          )}
         </label>
         <label className="filter-select">
           <span>Planificacion</span>
@@ -446,9 +441,11 @@ export function OrdersClient({
 export function OrderDetailClient({
   orderId,
   surface,
+  branchId,
 }: {
   orderId: number;
   surface: "pv" | "warehouse";
+  branchId: number;
 }) {
   const [order, setOrder] = useState<Order | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -481,7 +478,10 @@ export function OrderDetailClient({
   if (!order)
     return (
       <main className="orders-shell">
-        <Header active="orders" />
+        <Header
+          active={surface === "warehouse" ? "warehouse" : "orders"}
+          branchId={branchId}
+        />
         <div className="orders-loading">
           <div className="skeleton" />
         </div>
@@ -597,7 +597,10 @@ export function OrderDetailClient({
     ) : null;
   return (
     <main className="orders-shell warehouse-detail-shell">
-      <Header active={surface === "warehouse" ? "warehouse" : "orders"} />
+      <Header
+        active={surface === "warehouse" ? "warehouse" : "orders"}
+        branchId={branchId}
+      />
       <section className="orders-intro">
         <div>
           <a

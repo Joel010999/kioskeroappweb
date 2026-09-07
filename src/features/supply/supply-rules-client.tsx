@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useEffectEvent, useState } from "react";
+import { OperationsNavigation } from "@/features/navigation/operations-navigation";
 
 type Mode = "UNDEFINED" | "DEPOT" | "DIRECT_SUPPLIER";
 type Evidence = "POSSIBLE_DEPOT" | "POSSIBLE_DIRECT_SUPPLIER" | "NO_EVIDENCE";
@@ -128,18 +129,7 @@ export function SupplyRulesClient({ branches }: { branches: number[] }) {
             MONICA<span className="brand-sub">Panel de operación</span>
           </span>
         </Link>
-        <nav>
-          <Link href="/dashboard">Resumen</Link>
-          <Link href="/replenishment">Validación</Link>
-          <Link className="active" href="/supply-rules">
-            Abastecimiento
-          </Link>
-          <Link href="/orders">Pedidos</Link>
-        </nav>
-        <div className="branch">
-          <span className="status-dot" />
-          Reglas operativas
-        </div>
+        <OperationsNavigation role="PV" branchId={branchId} />
       </header>
       <section className="orders-intro">
         <div>
