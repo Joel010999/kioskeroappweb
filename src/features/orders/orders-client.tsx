@@ -160,7 +160,7 @@ export function OrdersClient({
         params.set("pv", "1");
         if (filter) params.set("status", filter);
       }
-      if (origin) params.set("origin_branch_id", origin);
+      if (warehouse && origin) params.set("origin_branch_id", origin);
       if (planning) params.set("planning_date", planning);
       if (search) params.set("search", search);
       const result = await api(`/api/orders?${params}`);
@@ -353,7 +353,9 @@ export function OrdersClient({
                         {order.item_count === 1 ? "" : "s"} · Reposicion interna
                       </small>
                     </td>
-                    <td data-label="PV">PV {order.origin_branch_id ?? "-"}</td>
+                    <td data-label="PV">
+                      {branchDisplayName(order.origin_branch_id ?? 0, "PV")}
+                    </td>
                     <td data-label="Planificacion">
                       {order.planning_date
                         ? new Date(order.planning_date).toLocaleDateString(
@@ -610,7 +612,9 @@ export function OrderDetailClient({
             Volver
           </a>
           <p className="page-context">Solicitud interna #{order.id}</p>
-          <h1>PV {order.origin_branch_id} a deposito</h1>
+          <h1>
+            {branchDisplayName(order.origin_branch_id ?? 0, "PV")} a deposito
+          </h1>
           <p>
             Planificacion {order.planning_date?.slice(0, 10)} · Creada{" "}
             {new Date(order.created_at).toLocaleDateString("es-AR")}

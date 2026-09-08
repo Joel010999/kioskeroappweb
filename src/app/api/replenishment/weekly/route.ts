@@ -18,7 +18,10 @@ export async function GET(request: Request) {
     const sort = params.get("sort");
     const page = parseOptionalPositiveInteger(params.get("page"), "page") ?? 1;
     const pageSize = parseOptionalPositiveInteger(params.get("page_size"), "page_size") ?? 25;
-    const { context, scope } = await getAuthorizedScope(params);
+    const requestedBranchId = parseOptionalPositiveInteger(params.get("branch_id"), "branch_id");
+    const { context, scope } = await getAuthorizedScope(new URLSearchParams());
+    if (requestedBranchId !== undefined && requestedBranchId !== scope.branchId)
+      throw new ForbiddenError();
     if (!canConfirmReplenishment(context, scope.branchId)) throw new ForbiddenError();
     if (!planningDate) throw new RequestValidationError("planning_date is required.");
     if (pageSize > 100) throw new RequestValidationError("page_size cannot exceed 100.");

@@ -158,12 +158,23 @@ export function ReplenishmentReviewClient({
   >({});
   const [confirming, setConfirming] = useState(false);
   const [confirmedOrder, setConfirmedOrder] = useState<number | null>(null);
-  const [existingOrder, setExistingOrder] = useState<number | null>(null);
+  const [existingOrder, setExistingOrder] = useState<{
+    id: number;
+    branchId: string;
+    planningDate: string;
+  } | null>(null);
+  const requestVersion = useRef(0);
+  const currentExistingOrder =
+    existingOrder?.branchId === branchId &&
+    existingOrder.planningDate === planningDate
+      ? existingOrder.id
+      : null;
   useEffect(() => {
+    const version = requestVersion.current + 1;
+    requestVersion.current = version;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       const params = new URLSearchParams({
-        branch_id: branchId,
         planning_date: planningDate,
         page: String(page),
         page_size: "50",
@@ -178,12 +189,14 @@ export function ReplenishmentReviewClient({
             signal: controller.signal,
           }),
           fetch(
-            `/api/orders?pv=1&active=1&origin_branch_id=${branchId}&planning_date=${planningDate}&limit=1`,
+            `/api/orders?pv=1&active=1&planning_date=${planningDate}&limit=1`,
             { signal: controller.signal },
           ),
         ]);
         const result = await response.json();
         const existing = await existingResponse.json();
+        if (controller.signal.aborted || version !== requestVersion.current)
+          return;
         if (!response.ok)
           throw new Error(
             result.error || "No pudimos cargar la revisión semanal.",
@@ -220,14 +233,24 @@ export function ReplenishmentReviewClient({
           }
           return next;
         });
-        setExistingOrder(existing.rows?.[0]?.id ?? null);
+        const existingId = existing.rows?.[0]?.id;
+        setExistingOrder(
+          typeof existingId === "number"
+            ? { id: existingId, branchId, planningDate }
+            : null,
+        );
         setConfirmedOrder(null);
         setError(null);
       } catch (cause) {
-        if ((cause as Error).name !== "AbortError")
+        if (
+          !controller.signal.aborted &&
+          version === requestVersion.current &&
+          (cause as Error).name !== "AbortError"
+        )
           setError((cause as Error).message);
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted && version === requestVersion.current)
+          setLoading(false);
       }
     }, 180);
     return () => {
@@ -454,9 +477,9 @@ export function ReplenishmentReviewClient({
             {data.location.label}
           </span>
         )}
-        {existingOrder && (
-          <Link className="order-primary" href={`/orders/${existingOrder}`}>
-            Solicitud existente #{existingOrder}
+        {currentExistingOrder && (
+          <Link className="order-primary" href={`/orders/${currentExistingOrder}`}>
+            Solicitud existente #{currentExistingOrder}
           </Link>
         )}
         <button
@@ -465,7 +488,7 @@ export function ReplenishmentReviewClient({
             !data ||
             confirming ||
             confirmedOrder !== null ||
-            existingOrder !== null
+            currentExistingOrder !== null
           }
           onClick={() => void confirm()}
         >

@@ -78,11 +78,17 @@ export async function listWarehouseOrders(options: { status?: OrderStatus; origi
   return { total: Number(total.rows[0].count), rows: result.rows.map(mapOrder), summary: { pending: Number(counts.pending), inPreparation: Number(counts.in_preparation), readyToDispatch: Number(counts.ready_to_dispatch), dispatched: Number(counts.dispatched), completed: Number(counts.completed) } satisfies WarehouseSummary };
 }
 
-export async function listBranchReplenishmentOrders(originBranchId: number, options: { status?: OrderStatus; planningDate?: string; activeOnly?: boolean; limit: number; offset: number }) {
-  const values: unknown[] = [originBranchId, options.status ?? null, options.planningDate ?? null, options.activeOnly ?? false, options.limit, options.offset];
-  const where = "o.organization_id=1 AND o.order_type='INTERNAL_REPLENISHMENT' AND o.origin_branch_id=$1 AND ($2::text IS NULL OR o.status=$2) AND ($3::date IS NULL OR o.planning_date=$3::date) AND (NOT $4::boolean OR o.status <> 'CANCELLED')";
-  const result = await query<OrderRow>(`${orderSelect} WHERE ${where} GROUP BY o.id ORDER BY o.planning_date DESC, o.created_at DESC LIMIT $5 OFFSET $6`, values);
-  const total = await query<{ count: string }>(`SELECT COUNT(*) AS count FROM orders o WHERE ${where}`, values.slice(0, 4));
+export type BranchReplenishmentScope = {
+  organizationId: number;
+  originBranchId: number;
+  destinationBranchId: number;
+};
+
+export async function listBranchReplenishmentOrders(scope: BranchReplenishmentScope, options: { status?: OrderStatus; planningDate?: string; activeOnly?: boolean; limit: number; offset: number }) {
+  const values: unknown[] = [scope.organizationId, scope.originBranchId, scope.destinationBranchId, options.status ?? null, options.planningDate ?? null, options.activeOnly ?? false, options.limit, options.offset];
+  const where = "o.organization_id=$1 AND o.order_type='INTERNAL_REPLENISHMENT' AND o.origin_branch_id=$2 AND o.destination_branch_id=$3 AND ($4::text IS NULL OR o.status=$4) AND ($5::date IS NULL OR o.planning_date=$5::date) AND (NOT $6::boolean OR o.status <> 'CANCELLED')";
+  const result = await query<OrderRow>(`${orderSelect} WHERE ${where} GROUP BY o.id ORDER BY o.planning_date DESC, o.created_at DESC LIMIT $7 OFFSET $8`, values);
+  const total = await query<{ count: string }>(`SELECT COUNT(*) AS count FROM orders o WHERE ${where}`, values.slice(0, 6));
   return { total: Number(total.rows[0].count), rows: result.rows.map(mapOrder) };
 }
 
