@@ -38,14 +38,14 @@ describe("branch replenishment orders", () => {
     );
   });
 
-  it("excludes cancelled orders when checking for an active request", async () => {
+  it("excludes cancelled and completed orders when checking for an active request", async () => {
     await listBranchReplenishmentOrders(
       { organizationId: 1, originBranchId: 2, destinationBranchId: 1 },
       options,
     );
 
     expect(String(query.mock.calls[0][0])).toContain(
-      "o.status <> 'CANCELLED'",
+      "o.status NOT IN ('CANCELLED', 'COMPLETED')",
     );
   });
 
