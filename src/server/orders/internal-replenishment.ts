@@ -66,7 +66,7 @@ export async function confirmInternalReplenishment(input: {
         "No hay artículos habilitados para generar un pedido al depósito.",
       );
     const existing = await client.query<{ id: string }>(
-      `SELECT id FROM orders WHERE order_type='INTERNAL_REPLENISHMENT' AND COALESCE(organization_id,-1)=$1 AND origin_branch_id=$2 AND destination_branch_id=$3 AND planning_date=$4 AND status NOT IN ('CANCELLED', 'COMPLETED')`,
+      `SELECT id FROM orders WHERE order_type='INTERNAL_REPLENISHMENT' AND COALESCE(organization_id,-1)=$1 AND origin_branch_id=$2 AND destination_branch_id=$3 AND planning_date=$4 AND status <> 'CANCELLED' AND status <> 'COMPLETED'`,
       [
         input.scope.organizationId,
         input.scope.branchId,

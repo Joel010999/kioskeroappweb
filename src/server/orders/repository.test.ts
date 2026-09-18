@@ -45,7 +45,7 @@ describe("branch replenishment orders", () => {
     );
 
     expect(String(query.mock.calls[0][0])).toContain(
-      "o.status NOT IN ('CANCELLED', 'COMPLETED')",
+      "o.status <> 'CANCELLED' AND o.status <> 'COMPLETED'",
     );
   });
 
