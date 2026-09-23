@@ -472,6 +472,7 @@ class IsolatedOperationalFixture {
       return rows([]);
     }
 
+    if (statement.startsWith("SELECT id FROM orders WHERE idempotency_key=$1")) return rows([]);
     throw new Error(`Unsupported isolated test query: ${statement}`);
   }
 }
@@ -497,6 +498,7 @@ async function confirmDepotOrder(
     planningDate,
     items: [{ article_id: articleId, requested_quantity: 90 }],
     actorId,
+    idempotencyToken: "e2e-token",
   });
 }
 

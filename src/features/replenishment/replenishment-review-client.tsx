@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { OperationsNavigation } from "@/features/navigation/operations-navigation";
 
 type Status =
@@ -142,6 +142,8 @@ export function ReplenishmentReviewClient({
   const [data, setData] = useState<Response | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [successCount, setSuccessCount] = useState(0);
+  const idempotencyToken = useMemo(() => typeof crypto !== "undefined" ? crypto.randomUUID() : "", [branchId, planningDate, successCount]);
   const [requested, setRequested] = useState<Record<string, number>>({});
   const [edited, setEdited] = useState<Record<string, true>>({});
   const [selected, setSelected] = useState<Record<string, boolean>>({});
@@ -365,6 +367,7 @@ export function ReplenishmentReviewClient({
           branch_id: Number(branchId),
           planning_date: planningDate,
           items,
+          idempotency_token: idempotencyToken,
         }),
       });
       const result = await response.json();

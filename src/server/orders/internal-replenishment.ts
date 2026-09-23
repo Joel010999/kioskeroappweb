@@ -18,6 +18,7 @@ export async function confirmInternalReplenishment(input: {
   planningDate: string;
   items: RequestItem[];
   actorId: string;
+  idempotencyToken: string;
 }) {
   const requested = new Map(
     input.items
@@ -65,6 +66,14 @@ export async function confirmInternalReplenishment(input: {
       throw new RequestValidationError(
         "No hay artículos habilitados para generar un pedido al depósito.",
       );
+    const idempotencyKey = `internal-replenishment:${input.idempotencyToken}`;
+    const existingByIdempotency = await client.query<{ id: string }>(
+      `SELECT id FROM orders WHERE idempotency_key=$1`,
+      [idempotencyKey]
+    );
+    if (existingByIdempotency.rows[0])
+      return { id: Number(existingByIdempotency.rows[0].id), created: false };
+
     const existing = await client.query<{ id: string }>(
       `SELECT id FROM orders WHERE order_type='INTERNAL_REPLENISHMENT' AND COALESCE(organization_id,-1)=$1 AND origin_branch_id=$2 AND destination_branch_id=$3 AND planning_date=$4 AND status <> 'CANCELLED' AND status <> 'COMPLETED'`,
       [
@@ -76,9 +85,9 @@ export async function confirmInternalReplenishment(input: {
     );
     if (existing.rows[0])
       return { id: Number(existing.rows[0].id), created: false };
-    const idempotencyKey = `internal-replenishment:${input.scope.organizationId}:${input.scope.branchId}:${DEPOT_BRANCH_ID}:${input.planningDate}`;
-    const created = await client.query<{ id: string }>(
-      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depósito',$7,$7) RETURNING id`,
+
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depósito',$7,$7) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
       [
         input.scope.organizationId,
         input.scope.sourceId,
@@ -89,7 +98,14 @@ export async function confirmInternalReplenishment(input: {
         input.actorId,
       ],
     );
-    const orderId = Number(created.rows[0].id);
+    if (!inserted.rows[0]) {
+      const won = await client.query<{ id: string }>(
+        `SELECT id FROM orders WHERE idempotency_key = $1`,
+        [idempotencyKey]
+      );
+      return { id: Number(won.rows[0].id), created: false };
+    }
+    const orderId = Number(inserted.rows[0].id);
     await client.query(
       "INSERT INTO order_events (order_id,event_type,metadata,user_id) VALUES ($1,'ORDER_CREATED',$2::jsonb,$4),($1,'ORDER_CONFIRMED',$3::jsonb,$4)",
       [
