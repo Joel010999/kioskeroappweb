@@ -10,14 +10,14 @@ type NavigationItem = { href: string; label: string };
 const navigationByRole: Record<NavigationRole, NavigationItem[]> = {
   PV: [
     { href: "/dashboard", label: "Resumen" },
-    { href: "/replenishment", label: "Reposición semanal" },
-    { href: "/replenishment/review", label: "Revisar" },
+    { href: "/workspaces", label: "Mis Pedidos" },
     { href: "/orders/suggestions", label: "Sugerencias V1" },
     { href: "/supply-rules", label: "Abastecimiento" },
     { href: "/orders", label: "Pedidos" },
   ],
   WAREHOUSE: [
     { href: "/dashboard", label: "Resumen" },
+    { href: "/deposit/upload", label: "Cargar Stock Depósito" },
     { href: "/orders/warehouse", label: "Operación de depósito" },
   ],
 };
@@ -28,7 +28,7 @@ export function navigationForRole(role: NavigationRole): NavigationItem[] {
 
 export function isNavigationActive(pathname: string, href: string): boolean {
   if (href === "/dashboard") return pathname === href;
-  if (href === "/replenishment") return pathname === href;
+  if (href === "/workspaces") return pathname.startsWith("/workspaces");
   if (href === "/orders/suggestions") return pathname === href;
   if (href === "/supply-rules") return pathname === href;
   if (href === "/orders")

@@ -8,7 +8,7 @@ import {
 describe("operational navigation", () => {
   it("shows PV screens without warehouse-only navigation", () => {
     const links = navigationForRole("PV").map((item) => item.href);
-    expect(links).toContain("/replenishment/review");
+    expect(links).toContain("/workspaces");
     expect(links).toContain("/supply-rules");
     expect(links).toContain("/orders/suggestions");
     expect(links).not.toContain("/orders/warehouse");
@@ -29,8 +29,7 @@ describe("operational navigation", () => {
     expect(
       isNavigationActive("/orders/warehouse/42", "/orders/warehouse"),
     ).toBe(true);
-    expect(isNavigationActive("/replenishment/review", "/replenishment")).toBe(false);
-    expect(isNavigationActive("/replenishment/review", "/replenishment/review")).toBe(true);
+    expect(isNavigationActive("/workspaces/1", "/workspaces")).toBe(true);
     expect(branchDisplayName(2, "PV")).toBe("PV1");
     expect(branchDisplayName(3, "PV")).toBe("PV2");
     expect(branchDisplayName(1, "WAREHOUSE")).toBe("DEPÓSITO");
