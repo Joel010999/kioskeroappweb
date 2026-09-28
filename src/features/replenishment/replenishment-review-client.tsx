@@ -143,6 +143,7 @@ export function ReplenishmentReviewClient({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [successCount, setSuccessCount] = useState(0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const idempotencyToken = useMemo(() => typeof crypto !== "undefined" ? crypto.randomUUID() : "", [branchId, planningDate, successCount]);
   const [requested, setRequested] = useState<Record<string, number>>({});
   const [edited, setEdited] = useState<Record<string, true>>({});
