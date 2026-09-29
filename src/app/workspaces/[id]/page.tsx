@@ -19,23 +19,22 @@ export default function WorkspaceEditorPage({ params }: { params: Promise<{ id: 
   const router = useRouter();
 
   useEffect(() => {
+    const fetchCatalog = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/workspaces/${resolvedParams.id}/catalog?branch_id=${branchId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setCatalog(data.catalog);
+        setWorkspace(data.workspace);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
     fetchCatalog();
-  }, []);
-
-  const fetchCatalog = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/workspaces/${resolvedParams.id}/catalog?branch_id=${branchId}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setCatalog(data.catalog);
-      setWorkspace(data.workspace);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [resolvedParams.id, branchId]);
 
   const handleQtyChange = (articleId: number, qty: number) => {
     setCatalog(prev => prev.map(item => 
@@ -89,7 +88,8 @@ export default function WorkspaceEditorPage({ params }: { params: Promise<{ id: 
       a.click();
       
       // Refresh to update status to DOWNLOADED
-      fetchCatalog();
+      // The fetchCatalog will not be available here, we need to manually trigger a re-fetch or use router.refresh()
+      window.location.reload();
     } catch (err: any) {
       alert("Error descargando excel: " + err.message);
     }

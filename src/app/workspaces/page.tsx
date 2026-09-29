@@ -15,23 +15,23 @@ export default function WorkspacesListPage() {
   const [branchId, setBranchId] = useState("2");
   const router = useRouter();
 
+
   useEffect(() => {
+    const fetchWorkspaces = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/workspaces?branch_id=${branchId}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setWorkspaces(data.workspaces || []);
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
     fetchWorkspaces();
   }, [branchId]);
-
-  const fetchWorkspaces = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/workspaces?branch_id=${branchId}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setWorkspaces(data.workspaces || []);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleCreate = async () => {
     setCreating(true);
@@ -93,7 +93,7 @@ export default function WorkspacesListPage() {
         <div className="text-gray-500">Cargando pedidos...</div>
       ) : workspaces.length === 0 ? (
         <div className="text-gray-500 text-center p-12 bg-gray-50 rounded border border-dashed">
-          No tenés ningún pedido en curso. Hacé click en "Nuevo Pedido" para empezar.
+          No tenés ningún pedido en curso. Hacé click en &quot;Nuevo Pedido&quot; para empezar.
         </div>
       ) : (
         <div className="grid gap-4">
