@@ -29,7 +29,8 @@ type Filter =
   | "SUGGESTION_EXCEEDS_DEPOT"
   | "SUPPLY_DEPOT"
   | "SUPPLY_DIRECT_SUPPLIER"
-  | "SUPPLY_UNDEFINED";
+  | "SUPPLY_UNDEFINED"
+  | "TO_REPLENISH";
 type Sort = "SUGGESTED_DESC" | "DEMAND_DESC" | "STOCK_ASC" | "DEPOT_GAP_DESC";
 type DepotState =
   | "DEPOT_STOCK_POSITIVE"
@@ -94,6 +95,7 @@ const quickFilters: Array<[Filter, string]> = [
 ];
 const filters: Array<[Filter, string]> = [
   ["", "Todos"],
+  ["TO_REPLENISH", "A reponer en depósito (Recomendado)"],
   ["WITH_SUGGESTION", "Con sugerencia"],
   ["NO_SUGGESTION", "Sin sugerencia"],
   ["REVIEW_REQUIRED", "Revisión manual"],
@@ -135,7 +137,7 @@ export function ReplenishmentReviewClient({
 }) {
   const branchId = String(authorizedBranchId);
   const [planningDate, setPlanningDate] = useState(nextSaturday);
-  const [filter, setFilter] = useState<Filter>("");
+  const [filter, setFilter] = useState<Filter>("TO_REPLENISH");
   const [sort, setSort] = useState<Sort>("SUGGESTED_DESC");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -216,8 +218,8 @@ export function ReplenishmentReviewClient({
             const key = requestedKey(branchId, planningDate, item.article_id);
             if (next[key] === undefined)
               next[key] =
-                item.supply_mode === "DEPOT" && item.requested_quantity > 0;
-            else if (item.supply_mode !== "DEPOT") next[key] = false;
+                (item.supply_mode === "DEPOT" || item.supply_mode === "UNDEFINED") && item.requested_quantity > 0;
+            else if (item.supply_mode === "DIRECT_SUPPLIER") next[key] = false;
           }
           selectedRef.current = next;
           return next;
@@ -226,7 +228,7 @@ export function ReplenishmentReviewClient({
           const next = { ...current };
           for (const item of result.items as Item[]) {
             const key = requestedKey(branchId, planningDate, item.article_id);
-            if (item.supply_mode !== "DEPOT") delete next[key];
+            if (item.supply_mode === "DIRECT_SUPPLIER") delete next[key];
             else if (selectedRef.current[key] && !next[key])
               next[key] = {
                 article_id: item.article_id,
@@ -272,14 +274,14 @@ export function ReplenishmentReviewClient({
     requested[requestedKey(branchId, planningDate, item.article_id)] ??
     item.requested_quantity;
   const selectedFor = (item: Item) =>
-    item.supply_mode === "DEPOT" &&
+    (item.supply_mode === "DEPOT" || item.supply_mode === "UNDEFINED") &&
     (selected[requestedKey(branchId, planningDate, item.article_id)] ??
       valueFor(item) > 0);
   const globalSelections = Object.entries(selectedItems)
     .filter(
       ([key, item]) =>
         key.startsWith(`${branchId}:${planningDate}:`) &&
-        item.supply_mode === "DEPOT",
+        (item.supply_mode === "DEPOT" || item.supply_mode === "UNDEFINED"),
     )
     .map(([, item]) => item);
   const globalEditedCount = Object.keys(edited).filter(
@@ -287,7 +289,7 @@ export function ReplenishmentReviewClient({
       key.startsWith(`${branchId}:${planningDate}:`) && selectedItems[key],
   ).length;
   const toggleSelection = (item: Item, checked: boolean) => {
-    if (item.supply_mode !== "DEPOT") return;
+    if (item.supply_mode === "DIRECT_SUPPLIER") return;
     const key = requestedKey(branchId, planningDate, item.article_id);
     setSelected((current) => {
       const next = { ...current, [key]: checked };
@@ -396,8 +398,8 @@ export function ReplenishmentReviewClient({
       </header>
       <section className="review-heading">
         <div>
-          <Link className="back-link" href="/replenishment">
-            Volver a validación
+          <Link className="back-link" href="/dashboard">
+            Volver al panel central
           </Link>
           <h1>Reposición semanal</h1>
           <p>
@@ -580,7 +582,7 @@ export function ReplenishmentReviewClient({
                       <td data-label="Incluir">
                         <input
                           type="checkbox"
-                          disabled={item.supply_mode !== "DEPOT"}
+                          disabled={item.supply_mode === "DIRECT_SUPPLIER"}
                           checked={selectedFor(item)}
                           onChange={(event) =>
                             toggleSelection(item, event.target.checked)

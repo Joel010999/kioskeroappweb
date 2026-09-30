@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Scope } from "@/server/analytics/types";
 import type { WeeklyReplenishmentItem } from "@/server/analytics/weekly-replenishment";
 import type { SupplyMode } from "@/server/supply/branch-supply-rules";
@@ -236,7 +236,7 @@ class IsolatedOperationalFixture {
           const supplyMode = this.rules.get(
             ruleKey(organizationId, branchId, articleId),
           );
-          return supplyMode === "DEPOT" ? [{ article_id: articleId, supply_mode: supplyMode }] : [];
+          return supplyMode ? [{ article_id: articleId, supply_mode: supplyMode }] : [];
         }),
       );
     }
@@ -561,7 +561,7 @@ describe("isolated operational replenishment flow", () => {
       fixture.reviewItems,
       fixture.modesFor(pv1Scope),
     );
-    expect(selectable.map((item) => item.article_id)).toEqual([DEPOT_ARTICLE]);
+    expect(selectable.map((item) => item.article_id)).toEqual([DEPOT_ARTICLE, UNDEFINED_ARTICLE]);
     expect(selectable[0]).toMatchObject({
       supply_mode: "DEPOT",
       suggested_quantity: 90,
@@ -729,13 +729,10 @@ describe("isolated operational replenishment flow", () => {
 
     await expect(
       confirmDepotOrder(pv1Scope, PV1_ACTOR, PLANNING_DATE, DIRECT_ARTICLE),
-    ).rejects.toThrow("No hay artículos habilitados");
-    await expect(
-      confirmDepotOrder(pv1Scope, PV1_ACTOR, PLANNING_DATE, UNDEFINED_ARTICLE),
-    ).rejects.toThrow("No hay artículos habilitados");
-    await expect(
+    ).rejects.toThrow("No hay artÃ­culos habilitados");
+        await expect(
       confirmDepotOrder(pv2Scope, PV2_ACTOR, PLANNING_DATE, DEPOT_ARTICLE),
-    ).rejects.toThrow("No hay artículos habilitados");
+    ).rejects.toThrow("No hay artÃ­culos habilitados");
     expect(fixture.orders).toHaveLength(0);
 
     await expect(confirmDepotOrder(pv1Scope, PV1_ACTOR)).resolves.toMatchObject({
@@ -801,3 +798,4 @@ describe("isolated operational replenishment flow", () => {
     expect(canReceiveOrder(pv1, pv1Order)).toBe(true);
   });
 });
+

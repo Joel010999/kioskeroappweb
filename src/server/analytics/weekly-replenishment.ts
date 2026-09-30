@@ -58,7 +58,8 @@ export type WeeklyReplenishmentFilter =
   | "SUGGESTION_EXCEEDS_DEPOT"
   | "SUPPLY_DEPOT"
   | "SUPPLY_DIRECT_SUPPLIER"
-  | "SUPPLY_UNDEFINED";
+  | "SUPPLY_UNDEFINED"
+  | "TO_REPLENISH";
 export type WeeklyReplenishmentSort =
   "SUGGESTED_DESC" | "DEMAND_DESC" | "STOCK_ASC" | "DEPOT_GAP_DESC";
 
@@ -81,6 +82,7 @@ const filterConditions: Record<WeeklyReplenishmentFilter, string> = {
   SUPPLY_DEPOT: "supply_mode = 'DEPOT'",
   SUPPLY_DIRECT_SUPPLIER: "supply_mode = 'DIRECT_SUPPLIER'",
   SUPPLY_UNDEFINED: "supply_mode = 'UNDEFINED'",
+  TO_REPLENISH: "status = 'SUGGESTION_AVAILABLE' AND supply_mode IN ('DEPOT', 'UNDEFINED')",
 };
 const orderBy: Record<WeeklyReplenishmentSort, string> = {
   SUGGESTED_DESC: "suggested_quantity DESC NULLS LAST",

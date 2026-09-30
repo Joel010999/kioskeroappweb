@@ -2,7 +2,7 @@ export const supplyModes = ["UNDEFINED", "DEPOT", "DIRECT_SUPPLIER"] as const;
 export type SupplyMode = (typeof supplyModes)[number];
 
 export function isDepotSupplyMode(mode: SupplyMode) {
-  return mode === "DEPOT";
+  return mode === "DEPOT" || mode === "UNDEFINED";
 }
 
 export function depotArticleIds<T extends { article_id: number }>(items: T[], modesByArticle: ReadonlyMap<number, SupplyMode>) {

@@ -10,7 +10,7 @@ describe("operational navigation", () => {
     const links = navigationForRole("PV").map((item) => item.href);
     expect(links).toContain("/workspaces");
     expect(links).toContain("/supply-rules");
-    expect(links).toContain("/orders/suggestions");
+    expect(links).toContain("/replenishment");
     expect(links).not.toContain("/orders/warehouse");
     expect(links.every((href) => !href.startsWith("/api/"))).toBe(true);
     expect(links.every((href) => !href.includes("branch_id"))).toBe(true);
