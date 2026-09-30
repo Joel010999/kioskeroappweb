@@ -125,7 +125,10 @@ export function DashboardClient({ branchName, warehouse }: { branchName: string;
 
     <nav className="dashboard-operation-nav" aria-label="Operación">
       {warehouse ? (
-        <a href="/orders/warehouse">Operación de depósito</a>
+        <>
+          <a href="/deposit/upload">Cargar Stock Depósito</a>
+          <a href="/orders/warehouse">Operación de depósito</a>
+        </>
       ) : (
         <>
           <a href="/replenishment">Reposición semanal</a>
