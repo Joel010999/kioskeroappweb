@@ -85,7 +85,6 @@ export function WeeklyReplenishmentClient({
   const [data, setData] = useState<Response | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [requested, setRequested] = useState<Record<number, number>>({});
 
   useEffect(() => {
     const controller = new AbortController();
@@ -142,20 +141,24 @@ export function WeeklyReplenishmentClient({
         </Link>
         <OperationsNavigation role="PV" branchId={authorizedBranchId} />
       </header>
-      <section className="orders-intro">
+      <section className="orders-intro" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <Link className="back-link" href="/dashboard">
             Volver al panel central
           </Link>
           <h1>Reposicion semanal</h1>
           <p>
-            Referencia de trabajo para tu punto de venta autorizado. La
-            solicitud es editable y no crea pedidos.
+            Referencia de trabajo para tu punto de venta autorizado. Sirve para validar la sugerencia actual.
           </p>
         </div>
-        <div className="method-note">
-          <strong>V1 semanal - mediana de 6 semanas</strong>
-          <span>Semanas completas anteriores a la fecha de planificacion.</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '1rem' }}>
+          <div className="method-note" style={{ textAlign: 'right' }}>
+            <strong>V1 semanal - mediana de 6 semanas</strong>
+            <span style={{ display: 'block' }}>Semanas completas anteriores a la fecha de planificacion.</span>
+          </div>
+          <Link href="/replenishment/review" className="order-primary" style={{ textDecoration: 'none' }}>
+            Continuar a Revisar Solicitud
+          </Link>
         </div>
       </section>
       <section className="orders-controls replenishment-controls">
@@ -233,8 +236,7 @@ export function WeeklyReplenishmentClient({
                 </thead>
                 <tbody>
                   {data?.items.map((item) => {
-                    const value =
-                      requested[item.article_id] ?? item.requested_quantity;
+                    const value = item.requested_quantity;
                     const warning =
                       item.warnings
                         .filter((entry) => !entry.startsWith("DEPOT_"))
@@ -280,22 +282,14 @@ export function WeeklyReplenishmentClient({
                           <input
                             className="quantity-input"
                             aria-label={
-                              "Cantidad solicitada para " +
+                              "Cantidad solicitada sugerida para " +
                               (item.description || item.article_id)
                             }
-                            type="number"
-                            min="0"
-                            step="any"
-                            value={value}
-                            onChange={(event) => {
-                              const next = Number(event.target.value);
-                              if (Number.isFinite(next) && next >= 0) {
-                                setRequested((current) => ({
-                                  ...current,
-                                  [item.article_id]: next,
-                                }));
-                              }
-                            }}
+                            type="text"
+                            readOnly
+                            value={units.format(value)}
+                            title="La edición se realiza en la siguiente pantalla de revisión."
+                            style={{ backgroundColor: 'var(--surface-sunken)', color: 'var(--text-muted)', cursor: 'not-allowed' }}
                           />
                         </td>
                         <td
