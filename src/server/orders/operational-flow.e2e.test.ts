@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Scope } from "@/server/analytics/types";
 import type { WeeklyReplenishmentItem } from "@/server/analytics/weekly-replenishment";
 import type { SupplyMode } from "@/server/supply/branch-supply-rules";

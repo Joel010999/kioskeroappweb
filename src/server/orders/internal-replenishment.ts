@@ -1,4 +1,4 @@
-﻿import {
+import {
   DEPOT_BRANCH_ID,
   getWeeklyReplenishment,
 } from "@/server/analytics/weekly-replenishment";
@@ -64,7 +64,7 @@ export async function confirmInternalReplenishment(input: {
     );
     if (!depotItems.length)
       throw new RequestValidationError(
-        "No hay artÃ­culos habilitados para generar un pedido al depÃ³sito.",
+        "No hay artículos habilitados para generar un pedido al depósito.",
       );
     const idempotencyKey = `internal-replenishment:${input.idempotencyToken}`;
     const existingByIdempotency = await client.query<{ id: string }>(
@@ -87,7 +87,7 @@ export async function confirmInternalReplenishment(input: {
       return { id: Number(existing.rows[0].id), created: false };
 
     const inserted = await client.query<{ id: string }>(
-      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depÃ³sito',$7,$7) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depósito',$7,$7) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
       [
         input.scope.organizationId,
         input.scope.sourceId,
@@ -127,7 +127,7 @@ export async function confirmInternalReplenishment(input: {
         [
           orderId,
           item.article_id,
-          item.description ?? `ArtÃ­culo ${item.article_id}`,
+          item.description ?? `Artículo ${item.article_id}`,
           item.suggested_quantity,
           item.requestedQuantity,
           item.stock_current,

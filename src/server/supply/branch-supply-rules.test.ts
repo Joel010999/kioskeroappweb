@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { depotArticleIds } from "./branch-supply-rules";
 
 describe("branch supply rules", () => {
