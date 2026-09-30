@@ -168,7 +168,7 @@ export async function getWeeklyReplenishment(options: {
       SELECT article_id, description, supplier_code, classification_code, unit_measure,
         stock_current, depot_stock, 
         CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END AS weekly_demand, 
-        weekly_average, weekly_max, weekly_min, active_weeks, supply_mode,
+        weekly_average, weekly_max, weekly_min, active_weeks, supply_mode, is_discrete,
         CASE WHEN stock_current < 0 THEN 'NEGATIVE_STOCK'
           WHEN active_weeks = 0 THEN 'NO_DEMAND'
           WHEN active_weeks < 3 THEN 'INSUFFICIENT_HISTORY'
@@ -177,9 +177,13 @@ export async function getWeeklyReplenishment(options: {
       FROM items_base
     )
     SELECT *, COUNT(*) OVER() AS total_rows FROM (
-      SELECT *, CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
+      SELECT article_id, description, supplier_code, classification_code, unit_measure,
+        stock_current, depot_stock, weekly_demand, weekly_average, weekly_max, weekly_min,
+        active_weeks, supply_mode, status,
+        CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
         ELSE weekly_demand END AS target_stock,
         CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
+        WHEN is_discrete THEN CEIL(GREATEST(0, weekly_demand - stock_current))
         ELSE GREATEST(0, weekly_demand - stock_current) END AS suggested_quantity
       FROM items
     ) decisions
