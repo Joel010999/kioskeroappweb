@@ -2,6 +2,8 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { LogoutButton } from "@/features/navigation/logout-button";
 import { dashboardApi } from "./api";
 import type { Attention, AttentionNoMovementItem, AttentionStockItem, DataHealth, Overview, Period, Product, StockResponse, TimeseriesPoint } from "./types";
 
@@ -90,6 +92,7 @@ export function DashboardClient({ branchName, warehouse }: { branchName: string;
   const [refreshKey, setRefreshKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [productSearch, setProductSearch] = useState(""); const [stockSearch, setStockSearch] = useState(""); const [depo, setDepo] = useState(""); const [page, setPage] = useState(1);
+  const router = useRouter();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -116,7 +119,7 @@ export function DashboardClient({ branchName, warehouse }: { branchName: string;
   const reviewStock = () => { setStockSearch(""); setPage(1); document.getElementById("stock")?.scrollIntoView({ behavior: "smooth", block: "start" }); };
 
   return <main className="dashboard-shell">
-    <header className="topbar"><a className="brand" href="/dashboard" aria-label="Dashboard de Mónica"><span className="brand-mark">M</span><span>MONICA<span className="brand-sub">Panel de operación</span></span></a><nav aria-label="Secciones"><a className="active" href="#overview">Resumen</a><a href="#evolucion">Evolución</a><a href="#productos">Productos</a><a href="#stock">Stock</a>{warehouse ? <a href="/orders/warehouse">Operacion</a> : <a href="/orders/suggestions">Sugerencias</a>}</nav><div className="branch"><span className="status-dot" />{branchName}</div><button className={`refresh ${isRefreshing ? "is-refreshing" : ""}`} onClick={refresh} disabled={isRefreshing} aria-label="Actualizar datos" aria-live="polite"><Icon name="refresh" /> <span>{isRefreshing ? "Actualizando" : "Actualizar"}</span></button></header>
+    <header className="topbar"><a className="brand" href="/dashboard" aria-label="Dashboard de Mónica"><span className="brand-mark">M</span><span>MONICA<span className="brand-sub">Panel de operación</span></span></a><nav aria-label="Secciones"><a className="active" href="#overview">Resumen</a><a href="#evolucion">Evolución</a><a href="#productos">Productos</a><a href="#stock">Stock</a>{warehouse ? <a href="/orders/warehouse">Operacion</a> : <a href="/orders/suggestions">Sugerencias</a>}</nav><div className="branch"><span className="status-dot" />{branchName}</div><button className={`refresh ${isRefreshing ? "is-refreshing" : ""}`} onClick={refresh} disabled={isRefreshing} aria-label="Actualizar datos" aria-live="polite"><Icon name="refresh" /> <span>{isRefreshing ? "Actualizando" : "Actualizar"}</span></button><LogoutButton /></header>
 
     <section className="period-bar" aria-label="Selector de período"><div><p className="page-context">Dashboard de Mónica · {branchName}</p><h1>Estado de la operación</h1><p>Ventas, disponibilidad y datos de una misma jornada de decisión.</p>{activeOverview?.last_updated_at && <span className="last-updated">Actualizado {dateTime.format(new Date(activeOverview.last_updated_at))}</span>}</div><div className="period-controls"><label className="select-wrap"><Icon name="calendar" size={16} /><span className="sr-only">Período rápido</span><select value={period.label} onChange={(event) => applyPreset(Object.entries({ today: "Hoy", yesterday: "Ayer", week: "Últimos 7 días", month: "Últimos 30 días", "current-month": "Mes actual", "previous-month": "Mes anterior", year: "Año actual", custom: "Personalizado" }).find(([, value]) => value === event.target.value)?.[0] ?? "custom")}><option>Hoy</option><option>Ayer</option><option>Últimos 7 días</option><option>Últimos 30 días</option><option>Mes actual</option><option>Mes anterior</option><option>Año actual</option><option>Personalizado</option></select></label><div className="date-pair"><label className="date-input"><span>Desde</span><input type="date" value={period.from} onChange={(event) => setPeriod((current) => ({ ...current, from: event.target.value, to: event.target.value > current.to ? event.target.value : current.to, label: "Personalizado" }))} /></label><span>→</span><label className="date-input"><span>Hasta</span><input type="date" value={period.to} min={period.from} onChange={(event) => setPeriod((current) => ({ ...current, to: event.target.value < current.from ? current.from : event.target.value, label: "Personalizado" }))} /></label></div></div></section>
 

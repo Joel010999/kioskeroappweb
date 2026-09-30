@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LogoutButton } from "./logout-button";
 
 export type NavigationRole = "PV" | "WAREHOUSE";
 
@@ -72,6 +73,7 @@ export function OperationsNavigation({
         <span className="status-dot" />
         {branchDisplayName(branchId, role)}
       </div>
+      <LogoutButton />
     </>
   );
 }

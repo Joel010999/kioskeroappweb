@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { LogoutButton } from "@/features/navigation/logout-button";
 
 export default function DepositUploadPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -39,10 +40,13 @@ export default function DepositUploadPage() {
 
   return (
     <main className="p-8 max-w-2xl mx-auto">
-      <header className="mb-8">
-        <Link href="/dashboard" className="text-blue-600 hover:underline mb-4 inline-block">&larr; Volver al inicio</Link>
-        <h1 className="text-2xl font-bold">Cargar Stock de Depósito</h1>
-        <p className="text-gray-600 mt-2">Subí el Excel oficial del depósito para que los Puntos de Venta puedan armar sus pedidos.</p>
+      <header className="mb-8 flex justify-between items-start">
+        <div>
+          <Link href="/dashboard" className="text-blue-600 hover:underline mb-4 inline-block">&larr; Volver al inicio</Link>
+          <h1 className="text-2xl font-bold">Cargar Stock de Depósito</h1>
+          <p className="text-gray-600 mt-2">Subí el Excel oficial del depósito para que los Puntos de Venta puedan armar sus pedidos.</p>
+        </div>
+        <LogoutButton />
       </header>
 
       <form onSubmit={handleUpload} className="space-y-6 bg-white p-6 rounded-lg shadow border border-gray-200">

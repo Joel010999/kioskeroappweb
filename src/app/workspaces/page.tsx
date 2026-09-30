@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { LogoutButton } from "@/features/navigation/logout-button";
 
 export default function WorkspacesListPage() {
   const [workspaces, setWorkspaces] = useState<any[]>([]);
@@ -80,6 +81,7 @@ export default function WorkspacesListPage() {
           >
             + Nuevo Pedido
           </button>
+          <LogoutButton />
         </div>
       </header>
 
