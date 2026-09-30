@@ -87,7 +87,7 @@ export async function confirmInternalReplenishment(input: {
       return { id: Number(existing.rows[0].id), created: false };
 
     const inserted = await client.query<{ id: string }>(
-      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depósito',$7,$7) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
+      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depósito',$7,$7) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id`,
       [
         input.scope.organizationId,
         input.scope.sourceId,
