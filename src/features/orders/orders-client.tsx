@@ -520,7 +520,7 @@ export function OrderDetailClient({
         items:
           order.items?.map((item) => ({
             item_id: item.id,
-            quantity: values[item.id] ?? item[field] ?? 0,
+            quantity: values[item.id] ?? item[field] ?? (field === "dispatched_quantity" ? item.prepared_quantity : item.dispatched_quantity) ?? 0,
           })) ?? [],
       }),
     });
@@ -528,22 +528,25 @@ export function OrderDetailClient({
     item: Item,
     field: "dispatched_quantity" | "received_quantity",
     maximum: number,
-  ) => (
-    <input
-      className="quantity-input"
-      type="number"
-      min="0"
-      max={maximum}
-      step="any"
-      value={values[item.id] ?? item[field] ?? ""}
-      onChange={(event) =>
-        setValues((current) => ({
-          ...current,
-          [item.id]: Number(event.target.value),
-        }))
-      }
-    />
-  );
+  ) => {
+    const fallback = field === "dispatched_quantity" ? item.prepared_quantity : item.dispatched_quantity;
+    return (
+      <input
+        className="quantity-input"
+        type="number"
+        min="0"
+        max={maximum}
+        step="any"
+        value={values[item.id] ?? item[field] ?? fallback ?? ""}
+        onChange={(event) =>
+          setValues((current) => ({
+            ...current,
+            [item.id]: Number(event.target.value),
+          }))
+        }
+      />
+    );
+  };
   const action =
     surface === "warehouse" ? (
       order.status === "CONFIRMED" ? (
