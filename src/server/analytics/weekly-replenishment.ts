@@ -154,20 +154,27 @@ export async function getWeeklyReplenishment(options: {
         AVG(COALESCE(s.quantity, 0)) AS weekly_average, MAX(COALESCE(s.quantity, 0)) AS weekly_max, MIN(COALESCE(s.quantity, 0)) AS weekly_min
       FROM active_articles a CROSS JOIN weeks w LEFT JOIN sales s ON s.article_id = a.article_id AND s.week_start = w.week_start
       GROUP BY a.article_id
-    ), items AS (
+    ), items_base AS (
       SELECT p.article_id, p.payload->>'Descripcion' AS description, p.payload->>'Proveedor' AS supplier_code,
         p.payload->>'Clasificacion' AS classification_code, p.payload->>'UnidadMedida' AS unit_measure,
         COALESCE(sp.current_stock, 0) AS stock_current, sd.depot_stock, m.weekly_demand, m.weekly_average, m.weekly_max, m.weekly_min, m.active_weeks,
         COALESCE(sr.supply_mode, 'UNDEFINED') AS supply_mode,
-        CASE WHEN COALESCE(sp.current_stock, 0) < 0 THEN 'NEGATIVE_STOCK'
-          WHEN m.active_weeks = 0 THEN 'NO_DEMAND'
-          WHEN m.active_weeks < 3 THEN 'INSUFFICIENT_HISTORY'
-          WHEN m.weekly_max - m.weekly_demand >= 20 AND (m.weekly_demand = 0 OR m.weekly_max >= m.weekly_demand * 3) THEN 'IRREGULAR_DEMAND'
-          WHEN GREATEST(0, m.weekly_demand - COALESCE(sp.current_stock, 0)) > 0 THEN 'SUGGESTION_AVAILABLE' ELSE 'NO_SUGGESTION' END AS status
+        CASE WHEN UPPER(p.payload->>'UnidadMedida') IN ('KG', 'KILO', 'KILOS', 'L', 'LITRO', 'LITROS') THEN false ELSE true END AS is_discrete
       FROM metrics m JOIN products_raw p ON p.article_id = m.article_id AND p.organization_id = $2 AND p.source_id = $3 AND p.branch_id = $4
       LEFT JOIN stock_pv sp ON sp.article_id = m.article_id LEFT JOIN stock_depot sd ON sd.article_id = m.article_id
       LEFT JOIN branch_product_supply_rules sr ON sr.organization_id = $2 AND sr.branch_id = $4 AND sr.article_id = m.article_id
       WHERE p.is_present
+    ), items AS (
+      SELECT article_id, description, supplier_code, classification_code, unit_measure,
+        stock_current, depot_stock, 
+        CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END AS weekly_demand, 
+        weekly_average, weekly_max, weekly_min, active_weeks, supply_mode,
+        CASE WHEN stock_current < 0 THEN 'NEGATIVE_STOCK'
+          WHEN active_weeks = 0 THEN 'NO_DEMAND'
+          WHEN active_weeks < 3 THEN 'INSUFFICIENT_HISTORY'
+          WHEN weekly_max - (CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) >= 20 AND ((CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) = 0 OR weekly_max >= (CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) * 3) THEN 'IRREGULAR_DEMAND'
+          WHEN GREATEST(0, (CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) - stock_current) > 0 THEN 'SUGGESTION_AVAILABLE' ELSE 'NO_SUGGESTION' END AS status
+      FROM items_base
     )
     SELECT *, COUNT(*) OVER() AS total_rows FROM (
       SELECT *, CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
