@@ -142,6 +142,7 @@ export async function removeItem(scope: Scope, orderId: number, itemId: number, 
 
 export async function changeStatus(scope: Scope, orderId: number, next: OrderStatus, actorId?: string) {
   return withTransaction(async (client) => { const current = await lockScopedOrder(client, scope, orderId); const event = transitionEvent(current.status, next); if (!event) throw new RequestValidationError(`Transition from ${current.status} to ${next} is not allowed.`); if (next === "CONFIRMED") { const count = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM order_items WHERE order_id=$1", [orderId]); if (Number(count.rows[0].count) === 0) throw new RequestValidationError("An order needs at least one item before confirmation."); }
+    if (next === "IN_PREPARATION") { await client.query("UPDATE order_items SET approved_quantity=requested_quantity, prepared_quantity=requested_quantity WHERE order_id=$1 AND approved_quantity IS NULL", [orderId]); }
     await client.query("UPDATE orders SET status=$1,updated_at=now(),confirmed_at=CASE WHEN $1='CONFIRMED' THEN now() ELSE confirmed_at END,confirmed_by=CASE WHEN $1='CONFIRMED' THEN $3 ELSE confirmed_by END,completed_at=CASE WHEN $1='COMPLETED' THEN now() ELSE completed_at END WHERE id=$2", [next, orderId, actorId ?? null]); await addEvent(client, orderId, event, {}, actorId); });
 }
 
