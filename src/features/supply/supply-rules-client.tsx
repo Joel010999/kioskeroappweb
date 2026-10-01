@@ -124,9 +124,8 @@ export function SupplyRulesClient({ branches }: { branches: number[] }) {
     <main className="orders-shell">
       <header className="orders-topbar">
         <Link className="brand" href="/dashboard">
-          <span className="brand-mark">M</span>
-          <span>
-            MONICA<span className="brand-sub">Panel de operación</span>
+          <span className="brand-mark">LCQ</span>
+          <span>LA CASA DEL QUIOSQUERO<span className="brand-sub">Panel de operación</span>
           </span>
         </Link>
         <OperationsNavigation role="PV" branchId={branchId} />

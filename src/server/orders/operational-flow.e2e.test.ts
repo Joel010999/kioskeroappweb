@@ -729,10 +729,10 @@ describe("isolated operational replenishment flow", () => {
 
     await expect(
       confirmDepotOrder(pv1Scope, PV1_ACTOR, PLANNING_DATE, DIRECT_ARTICLE),
-    ).rejects.toThrow("No hay artÃ­culos habilitados");
+    ).rejects.toThrow("No hay artículos habilitados");
         await expect(
       confirmDepotOrder(pv2Scope, PV2_ACTOR, PLANNING_DATE, DEPOT_ARTICLE),
-    ).rejects.toThrow("No hay artÃ­culos habilitados");
+    ).rejects.toThrow("No hay artículos habilitados");
     expect(fixture.orders).toHaveLength(0);
 
     await expect(confirmDepotOrder(pv1Scope, PV1_ACTOR)).resolves.toMatchObject({

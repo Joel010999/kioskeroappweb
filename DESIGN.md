@@ -1,6 +1,6 @@
 # Design System
 
-## Dashboard de Monica
+## Dashboard de La Casa del Quiosquero
 
 El producto usa una interfaz de operación luminosa y sobria: lectura secuencial, información densa pero respirable y color reservado para estado, foco y evolución. No se utiliza una retícula de tarjetas decorativas como estructura principal.
 

@@ -1,4 +1,4 @@
-# Dashboard de Monica
+# Dashboard de La Casa del Quiosquero
 
 Base server-side para el dashboard de La Casa del Kioskero. La UI completa queda fuera de esta etapa.
 
