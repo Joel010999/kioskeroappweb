@@ -450,6 +450,17 @@ class IsolatedOperationalFixture {
     }
 
     if (statement.startsWith("UPDATE order_items SET")) {
+      if (statement.startsWith("UPDATE order_items SET approved_quantity=requested_quantity")) {
+        const [orderId] = values as [number];
+        for (const item of this.itemsFor(orderId)) {
+          if (item.approvedQuantity === null) {
+            item.approvedQuantity = item.requestedQuantity;
+            item.preparedQuantity = item.requestedQuantity;
+          }
+        }
+        return rows([]);
+      }
+
       const field = statement.match(
         /UPDATE order_items SET (approved_quantity|prepared_quantity|dispatched_quantity|received_quantity)=\$1/,
       )?.[1];

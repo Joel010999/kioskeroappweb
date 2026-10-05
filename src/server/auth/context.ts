@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { query } from "@/server/db/client";
 import { UnauthenticatedError } from "./errors";
 
-export const AUTH_SESSION_COOKIE = "monica_session";
+export const AUTH_SESSION_COOKIE = "quiosquero_session";
 export type AuthorizationMembership = { branchId: number; role: "PV_OPERATOR" | "WAREHOUSE_OPERATOR"; active: boolean };
 export type AuthorizationContext = { userId: number; organizationId: number; userActive: boolean; memberships: AuthorizationMembership[] };
 type SessionPayload = { userId: number; organizationId: number; expiresAt: number };
