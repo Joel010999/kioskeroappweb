@@ -18,7 +18,7 @@ describe("navigation proxy", () => {
   it("lets the request reach server-side authorization when a session cookie exists", () => {
     const response = proxy(
       new NextRequest("https://monica.local/dashboard", {
-        headers: { cookie: "monica_session=session-value" },
+        headers: { cookie: "quiosquero_session=session-value" },
       }),
     );
     expect(response.headers.get("x-middleware-next")).toBe("1");

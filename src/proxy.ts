@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const AUTH_SESSION_COOKIE = "monica_session";
+const AUTH_SESSION_COOKIE = "quiosquero_session";
 const protectedPrefixes = ["/dashboard", "/replenishment", "/orders", "/supply-rules"];
 
 export function proxy(request: NextRequest) {
