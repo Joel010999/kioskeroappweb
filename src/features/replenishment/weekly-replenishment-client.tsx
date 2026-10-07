@@ -135,7 +135,7 @@ export function WeeklyReplenishmentClient({
       <header className="orders-topbar">
         <Link className="brand" href="/dashboard">
           <span className="brand-mark">LCQ</span>
-          <span>LA CASA DEL QUIOSQUERO<span className="brand-sub">Panel de operación</span>
+          <span>LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span>
           </span>
         </Link>
         <OperationsNavigation role="PV" branchId={authorizedBranchId} />

@@ -8,7 +8,7 @@ web
 
 ## Users
 
-La Casa del Quiosquero opera la sucursal MOSTRADOR y necesita entender el estado comercial y de stock sin revisar el histórico técnico.
+La Casa del Kioskero opera la sucursal MOSTRADOR y necesita entender el estado comercial y de stock sin revisar el histórico técnico.
 
 ## Product Purpose
 

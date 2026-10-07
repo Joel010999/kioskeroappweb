@@ -42,7 +42,7 @@ Esta es la pantalla donde el sistema calcula automáticamente cuánto debería p
 - **Filtro Recomendado:** Seleccionando "A reponer en depósito (Recomendado)", el sistema aísla exclusivamente los productos con sugerencia > 0 y cuyo proveedor designado es el Depósito (o que no están asignados, `UNDEFINED`).
 
 ## 6. Revisar y Confirmar Reposición
-El usuario del PV usa los filtros para ver la preselección de La Casa del Quiosquero. 
+El usuario del PV usa los filtros para ver la preselección de La Casa del Kioskero. 
 - La sugerencia es *solo una recomendación*. El operador puede hacer clic en cualquier casilla de "CANTIDAD A PEDIR" y editar el número a gusto.
 - Al final de la página, un botón de **Confirmar reposición** permite enviar esa lista directamente al depósito.
 
@@ -53,7 +53,7 @@ Cuando la orden aparece como **Despachado**, el PV debe entrar para revisar la c
 ## 8. Carga de Stock del Depósito
 Pantalla exclusiva para el Depósito. 
 - Permite subir un archivo `.xlsx` (Excel) con el stock actual.
-- Este archivo genera un **snapshot** (foto) del stock que La Casa del Quiosquero usará únicamente de manera *informativa* para avisar a los PV si el depósito tiene la mercadería que están pidiendo.
+- Este archivo genera un **snapshot** (foto) del stock que La Casa del Kioskero usará únicamente de manera *informativa* para avisar a los PV si el depósito tiene la mercadería que están pidiendo.
 
 ## 9. Flujo del Depósito
 El usuario del depósito entra a **Operación de Depósito**. Aquí caen las Solicitudes Confirmadas por los PVs.
@@ -73,7 +73,7 @@ El Excel que usa el depósito debe mantener el formato de columnas extraídas or
 - **Cantidades Operativas:** Lo solicitado, aprobado, preparado, despachado y recibido pertenecen exclusivamente a la orden del sistema y no afectan el stock contable automáticamente.
 
 ## 12. Flujo Completo Paso a Paso
-1. **Depósito:** Sube su Excel de stock para que La Casa del Quiosquero sepa qué hay disponible.
+1. **Depósito:** Sube su Excel de stock para que La Casa del Kioskero sepa qué hay disponible.
 2. **PV:** Entra a "Reposición Semanal", filtra por sugeridas para el depósito, edita cantidades si quiere, y toca "Confirmar".
 3. **Depósito:** Entra a la Bandeja de Operaciones, abre la orden, toca "Comenzar Preparación" (se auto-llena todo), ajusta las faltantes, y toca "Registrar Despacho".
 4. **PV:** Recibe la mercadería física, abre "Mis Pedidos", verifica las cantidades despachadas, y toca "Registrar Recepción" para cerrar el ciclo.

@@ -1,4 +1,4 @@
-# Dashboard de La Casa del Quiosquero
+# Dashboard de La Casa del Kioskero
 
 Base server-side para el dashboard de La Casa del Kioskero. La UI completa queda fuera de esta etapa.
 
