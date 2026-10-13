@@ -245,6 +245,7 @@ export function ReplenishmentReviewClient({
 
   const [confirming, setConfirming] = useState(false);
   const [confirmedOrder, setConfirmedOrder] = useState<number | null>(null);
+  const [confirmedOrderId, setConfirmedOrderId] = useState<number | null>(null);
   const [existingOrder, setExistingOrder] = useState<{
     id: number;
     branchId: string;
@@ -626,8 +627,11 @@ export function ReplenishmentReviewClient({
       const result = await response.json();
       if (!response.ok)
         throw new Error(result.error || "No pudimos confirmar la solicitud.");
-      setConfirmedOrder(result.id);
-      setExistingOrder(result.id);
+      const returnedOrderNumber = result.order_number ?? result.id;
+      const returnedId = result.id;
+      setConfirmedOrder(returnedOrderNumber);
+      setConfirmedOrderId(returnedId);
+      setExistingOrder({ id: returnedId, branchId, planningDate });
       try {
         localStorage.removeItem(draftStorageKey(branchId, planningDate));
       } catch {}
@@ -913,7 +917,7 @@ export function ReplenishmentReviewClient({
       {confirmedOrder && (
         <section className="replenishment-note">
           <strong>Solicitud enviada al depósito · #{confirmedOrder}</strong>
-          <Link className="order-link" href={`/orders/${confirmedOrder}`}>
+          <Link className="order-link" href={`/orders/${confirmedOrderId || confirmedOrder}`}>
             Ver solicitud
           </Link>
         </section>

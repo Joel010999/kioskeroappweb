@@ -38,6 +38,7 @@ type Event = {
 };
 type Order = {
   id: number;
+  order_number?: number;
   status: Status;
   created_at: string;
   item_count: number;
@@ -180,7 +181,7 @@ export function OrdersClient({
     try {
       const fullOrder = await api(`/api/orders/${order.id}`);
       downloadOrderExcel({
-        orderId: fullOrder.id,
+        orderId: fullOrder.order_number ?? fullOrder.id,
         status: labels[fullOrder.status as Status] || fullOrder.status,
         branchLabel: branchDisplayName(fullOrder.origin_branch_id ?? 0, "PV"),
         planningDate: fullOrder.planning_date?.slice(0, 10),
@@ -405,7 +406,7 @@ export function OrdersClient({
                 {rows.map((order) => (
                   <tr key={order.id}>
                     <td data-label="Pedido">
-                      <strong>#{order.id}</strong>
+                      <strong>#{order.order_number ?? order.id}</strong>
                       <small>
                         {order.item_count} producto
                         {order.item_count === 1 ? "" : "s"} · Reposición a depósito
@@ -470,7 +471,7 @@ export function OrdersClient({
                           type="button"
                           className="order-export-btn-sm"
                           onClick={() => void exportOrderFromList(order)}
-                          title={`Exportar pedido #${order.id} a Excel (.xlsx)`}
+                          title={`Exportar pedido #${order.order_number ?? order.id} a Excel (.xlsx)`}
                         >
                           📊 Excel
                         </button>
@@ -695,7 +696,7 @@ export function OrderDetailClient({
           >
             Volver
           </a>
-          <p className="page-context">Solicitud interna #{order.id}</p>
+          <p className="page-context">Solicitud interna #{order.order_number ?? order.id}</p>
           <h1>
             {branchDisplayName(order.origin_branch_id ?? 0, "PV")} a deposito
           </h1>
@@ -710,7 +711,7 @@ export function OrderDetailClient({
             className="order-export-btn"
             onClick={() =>
               downloadOrderExcel({
-                orderId: order.id,
+                orderId: order.order_number ?? order.id,
                 status: difference ? "Completado con diferencia" : labels[order.status],
                 branchLabel: branchDisplayName(order.origin_branch_id ?? 0, "PV"),
                 planningDate: order.planning_date?.slice(0, 10),

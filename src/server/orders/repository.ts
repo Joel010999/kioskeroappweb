@@ -5,12 +5,12 @@ import { query, withTransaction } from "@/server/db/client";
 import { RequestValidationError } from "@/server/validation/request";
 import { canEditOrder, isOperationalQuantityValid, transitionEvent, type OrderEventType, type OrderStatus } from "./rules";
 
-type OrderRow = { id: string; organization_id: number | null; source_id: string; branch_id: number; status: OrderStatus; created_by: string | null; created_at: string; updated_at: string; confirmed_by: string | null; confirmed_at: string | null; completed_at: string | null; notes: string; order_type: string; origin_branch_id: number | null; destination_branch_id: number | null; planning_date: string | null; item_count: string; requested_units: string; approved_units: string; prepared_units: string; dispatched_units: string; received_units: string };
+type OrderRow = { id: string; order_number?: string | number | null; organization_id: number | null; source_id: string; branch_id: number; status: OrderStatus; created_by: string | null; created_at: string; updated_at: string; confirmed_by: string | null; confirmed_at: string | null; completed_at: string | null; notes: string; order_type: string; origin_branch_id: number | null; destination_branch_id: number | null; planning_date: string | null; item_count: string; requested_units: string; approved_units: string; prepared_units: string; dispatched_units: string; received_units: string };
 type ItemRow = { id: string; order_id: string; article_id: number; product_name_snapshot: string; suggested_quantity: string | null; requested_quantity: string; stock_at_creation: string; stock_target_at_creation: string | null; confidence_at_creation: string; status_at_creation: string; weekly_demand_at_creation: string | null; planning_date_at_creation: string | null; supplier_code_snapshot: string | null; classification_code_snapshot: string | null; unit_measure_snapshot: string | null; approved_quantity: string | null; prepared_quantity: string | null; dispatched_quantity: string | null; received_quantity: string | null; created_at: string; updated_at: string };
 type EventRow = { id: string; order_id: string; event_type: OrderEventType; user_id: string | null; actor_name: string | null; actor_email: string | null; metadata: Record<string, unknown>; created_at: string };
 
 export type OrderItem = Omit<ItemRow, "id" | "order_id" | "suggested_quantity" | "requested_quantity" | "stock_at_creation" | "stock_target_at_creation" | "weekly_demand_at_creation" | "approved_quantity" | "prepared_quantity" | "dispatched_quantity" | "received_quantity"> & { id: number; order_id: number; suggested_quantity: number | null; requested_quantity: number; stock_at_creation: number; stock_target_at_creation: number | null; weekly_demand_at_creation: number | null; approved_quantity: number | null; prepared_quantity: number | null; dispatched_quantity: number | null; received_quantity: number | null };
-export type Order = Omit<OrderRow, "id" | "item_count" | "requested_units" | "approved_units" | "prepared_units" | "dispatched_units" | "received_units"> & { id: number; item_count: number; requested_units: number; approved_units: number; prepared_units: number; dispatched_units: number; received_units: number };
+export type Order = Omit<OrderRow, "id" | "order_number" | "item_count" | "requested_units" | "approved_units" | "prepared_units" | "dispatched_units" | "received_units"> & { id: number; order_number: number; item_count: number; requested_units: number; approved_units: number; prepared_units: number; dispatched_units: number; received_units: number };
 export type OrderEvent = Omit<EventRow, "id" | "order_id"> & { id: number; order_id: number };
 
 const scopeWhere = "o.source_id = $1 AND o.branch_id = $2 AND ($3::integer IS NULL OR o.organization_id = $3)";
@@ -19,7 +19,7 @@ const scopeValues = (scope: Scope): [string, number, number | null] => [scope.so
 const numberOrNull = (value: string | null) => value === null ? null : Number(value);
 const orderSelect = `SELECT o.*, COUNT(i.id) AS item_count, COALESCE(SUM(i.requested_quantity), 0) AS requested_units, COALESCE(SUM(i.approved_quantity), 0) AS approved_units, COALESCE(SUM(i.prepared_quantity), 0) AS prepared_units, COALESCE(SUM(i.dispatched_quantity), 0) AS dispatched_units, COALESCE(SUM(i.received_quantity), 0) AS received_units FROM orders o LEFT JOIN order_items i ON i.order_id=o.id`;
 
-function mapOrder(row: OrderRow): Order { return { ...row, id: Number(row.id), item_count: Number(row.item_count), requested_units: Number(row.requested_units), approved_units: Number(row.approved_units), prepared_units: Number(row.prepared_units), dispatched_units: Number(row.dispatched_units), received_units: Number(row.received_units) }; }
+function mapOrder(row: OrderRow): Order { return { ...row, id: Number(row.id), order_number: Number(row.order_number ?? row.id), item_count: Number(row.item_count), requested_units: Number(row.requested_units), approved_units: Number(row.approved_units), prepared_units: Number(row.prepared_units), dispatched_units: Number(row.dispatched_units), received_units: Number(row.received_units) }; }
 function mapItem(row: ItemRow): OrderItem { return { ...row, id: Number(row.id), order_id: Number(row.order_id), suggested_quantity: numberOrNull(row.suggested_quantity), requested_quantity: Number(row.requested_quantity), stock_at_creation: Number(row.stock_at_creation), stock_target_at_creation: numberOrNull(row.stock_target_at_creation), weekly_demand_at_creation: numberOrNull(row.weekly_demand_at_creation), approved_quantity: numberOrNull(row.approved_quantity), prepared_quantity: numberOrNull(row.prepared_quantity), dispatched_quantity: numberOrNull(row.dispatched_quantity), received_quantity: numberOrNull(row.received_quantity) }; }
 function mapEvent(row: EventRow): OrderEvent { return { ...row, id: Number(row.id), order_id: Number(row.order_id) }; }
 
@@ -58,7 +58,7 @@ function automaticSuggestion(item: Suggestion) {
 
 export async function listOrders(scope: Scope, options: { status?: OrderStatus; search?: string; from?: string; to?: string; limit: number; offset: number }) {
   const values: unknown[] = [...scopeValues(scope), options.status ?? null, options.search ? `%${options.search}%` : null, options.from ?? null, options.to ?? null, options.limit, options.offset];
-  const where = `${scopeWhere} AND ($4::text IS NULL OR o.status=$4) AND ($5::text IS NULL OR o.id::text ILIKE $5 OR EXISTS (SELECT 1 FROM order_items si WHERE si.order_id=o.id AND si.product_name_snapshot ILIKE $5)) AND ($6::date IS NULL OR o.created_at >= $6::date) AND ($7::date IS NULL OR o.created_at < $7::date + interval '1 day')`;
+  const where = `${scopeWhere} AND ($4::text IS NULL OR o.status=$4) AND ($5::text IS NULL OR o.id::text ILIKE $5 OR COALESCE(o.order_number::text, '') ILIKE $5 OR EXISTS (SELECT 1 FROM order_items si WHERE si.order_id=o.id AND si.product_name_snapshot ILIKE $5)) AND ($6::date IS NULL OR o.created_at >= $6::date) AND ($7::date IS NULL OR o.created_at < $7::date + interval '1 day')`;
   const result = await query<OrderRow>(`${orderSelect} WHERE ${where} GROUP BY o.id ORDER BY o.created_at DESC LIMIT $8 OFFSET $9`, values);
   const total = await query<{ count: string }>(`SELECT COUNT(*) AS count FROM orders o WHERE ${where}`, values.slice(0, 7));
   return { total: Number(total.rows[0].count), rows: result.rows.map(mapOrder) };
@@ -68,7 +68,7 @@ export type WarehouseSummary = { pending: number; inPreparation: number; readyTo
 
 export async function listWarehouseOrders(options: { status?: OrderStatus; originBranchId?: number; planningDate?: string; search?: string; readyToDispatch?: boolean; limit: number; offset: number }) {
   const values: unknown[] = [options.status ?? null, options.originBranchId ?? null, options.planningDate ?? null, options.search ? `%${options.search}%` : null, options.readyToDispatch ?? false, options.limit, options.offset];
-  const baseWhere = "o.organization_id=1 AND o.order_type='INTERNAL_REPLENISHMENT' AND o.destination_branch_id=1 AND ($1::text IS NULL OR o.status=$1) AND ($2::integer IS NULL OR o.origin_branch_id=$2) AND ($3::date IS NULL OR o.planning_date=$3::date) AND ($4::text IS NULL OR o.id::text ILIKE $4 OR EXISTS (SELECT 1 FROM order_items si WHERE si.order_id=o.id AND (si.article_id::text ILIKE $4 OR si.product_name_snapshot ILIKE $4)))";
+  const baseWhere = "o.organization_id=1 AND o.order_type='INTERNAL_REPLENISHMENT' AND o.destination_branch_id=1 AND ($1::text IS NULL OR o.status=$1) AND ($2::integer IS NULL OR o.origin_branch_id=$2) AND ($3::date IS NULL OR o.planning_date=$3::date) AND ($4::text IS NULL OR o.id::text ILIKE $4 OR COALESCE(o.order_number::text, '') ILIKE $4 OR EXISTS (SELECT 1 FROM order_items si WHERE si.order_id=o.id AND (si.article_id::text ILIKE $4 OR si.product_name_snapshot ILIKE $4)))";
   const readyWhere = "(NOT $5::boolean OR (o.status='IN_PREPARATION' AND NOT EXISTS (SELECT 1 FROM order_items ri WHERE ri.order_id=o.id AND COALESCE(ri.prepared_quantity, 0) < COALESCE(ri.approved_quantity, 0))))";
   const where = `${baseWhere} AND ${readyWhere}`;
   const result = await query<OrderRow>(`${orderSelect} WHERE ${where} GROUP BY o.id ORDER BY CASE o.status WHEN 'CONFIRMED' THEN 1 WHEN 'IN_PREPARATION' THEN 2 WHEN 'DISPATCHED' THEN 3 WHEN 'COMPLETED' THEN 4 WHEN 'CANCELLED' THEN 5 ELSE 6 END, o.planning_date ASC NULLS LAST, o.created_at ASC LIMIT $6 OFFSET $7`, values);
@@ -106,7 +106,7 @@ export async function listBranchReplenishmentOrders(
   let searchClause = "";
   if (options.search) {
     values.push(`%${options.search}%`);
-    searchClause = `AND (o.id::text ILIKE $${values.length} OR EXISTS (SELECT 1 FROM order_items si WHERE si.order_id=o.id AND (si.article_id::text ILIKE $${values.length} OR si.product_name_snapshot ILIKE $${values.length})))`;
+    searchClause = `AND (o.id::text ILIKE $${values.length} OR COALESCE(o.order_number::text, '') ILIKE $${values.length} OR EXISTS (SELECT 1 FROM order_items si WHERE si.order_id=o.id AND (si.article_id::text ILIKE $${values.length} OR si.product_name_snapshot ILIKE $${values.length})))`;
   }
   const where = `o.organization_id=$1 AND o.order_type='INTERNAL_REPLENISHMENT' AND o.origin_branch_id=$2 AND o.destination_branch_id=$3 AND ($4::text IS NULL OR o.status=$4) AND ($5::date IS NULL OR o.planning_date=$5::date) AND (NOT $6::boolean OR (o.status <> 'CANCELLED' AND o.status <> 'COMPLETED')) ${searchClause}`;
   const totalValues = [...values];
@@ -165,11 +165,12 @@ export async function listBranchReplenishmentOrders(
 }
 
 export async function getOrder(scope: Scope, orderId: number) {
-  const orderResult = await query<OrderRow>(`${orderSelect} WHERE ${warehouseOrScopeWhere} AND o.id=$4 GROUP BY o.id`, [...scopeValues(scope), orderId]);
+  const orderResult = await query<OrderRow>(`${orderSelect} WHERE ${warehouseOrScopeWhere} AND (o.id=$4 OR o.order_number=$4) GROUP BY o.id ORDER BY CASE WHEN o.id=$4 THEN 0 ELSE 1 END LIMIT 1`, [...scopeValues(scope), orderId]);
   if (!orderResult.rows[0]) throw new RequestValidationError("Order not found in the configured scope.");
+  const actualOrderId = Number(orderResult.rows[0].id);
   const [items, events] = await Promise.all([
-    query<ItemRow>("SELECT * FROM order_items WHERE order_id=$1 ORDER BY id", [orderId]),
-    query<EventRow>("SELECT e.*, u.name AS actor_name, u.email AS actor_email FROM order_events e LEFT JOIN users u ON u.id::text=e.user_id WHERE e.order_id=$1 ORDER BY e.created_at, e.id", [orderId]),
+    query<ItemRow>("SELECT * FROM order_items WHERE order_id=$1 ORDER BY id", [actualOrderId]),
+    query<EventRow>("SELECT e.*, u.name AS actor_name, u.email AS actor_email FROM order_events e LEFT JOIN users u ON u.id::text=e.user_id WHERE e.order_id=$1 ORDER BY e.created_at, e.id", [actualOrderId]),
   ]);
   return { ...mapOrder(orderResult.rows[0]), items: items.rows.map(mapItem), events: events.rows.map(mapEvent) };
 }
@@ -181,7 +182,7 @@ export async function createOrder(scope: Scope, articleIds: number[], notes = ""
   const unavailable = distinct.filter((id) => !automaticSuggestion(suggestions.get(id)!));
   if (unavailable.length) throw new RequestValidationError("Manual review and insufficient-history products cannot be added automatically.");
   return withTransaction(async (client) => {
-    const created = await client.query<{ id: string }>("INSERT INTO orders (organization_id,source_id,branch_id,status,notes,created_by) VALUES ($1,$2,$3,'DRAFT',$4,$5) RETURNING id", [scope.organizationId ?? null, scope.sourceId, scope.branchId, notes, actorId ?? null]);
+    const created = await client.query<{ id: string; order_number?: string }>("INSERT INTO orders (organization_id,source_id,branch_id,status,notes,created_by) VALUES ($1,$2,$3,'DRAFT',$4,$5) RETURNING id, order_number", [scope.organizationId ?? null, scope.sourceId, scope.branchId, notes, actorId ?? null]);
     const orderId = Number(created.rows[0].id);
     await addEvent(client, orderId, "ORDER_CREATED", {}, actorId);
     for (const articleId of distinct) {
