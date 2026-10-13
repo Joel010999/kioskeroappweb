@@ -1,5 +1,5 @@
 "use client";
-/* eslint-disable @next/next/no-html-link-for-pages, react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
 import { useEffect, useState } from "react";
 import { activityActorLabel } from "./activity";
@@ -198,6 +198,8 @@ export function OrdersClient({
     setPage(1);
   };
   const pages = Math.max(1, Math.ceil(total / 20));
+  const currentBranchName = branchDisplayName(branchId, "PV");
+
   return (
     <main className={`orders-shell ${warehouse ? "warehouse-shell" : ""}`}>
       <Header
@@ -207,72 +209,110 @@ export function OrdersClient({
       <section className="orders-intro">
         <div>
           <p className="page-context">
-            {warehouse ? "Centro operativo" : "Seguimiento"}
+            {warehouse ? "Centro operativo" : `Sucursal ${currentBranchName}`}
           </p>
-          <h1>{warehouse ? "Bandeja de deposito" : "Mis solicitudes"}</h1>
+          <h1>{warehouse ? "Bandeja de depósito" : "Mis pedidos"}</h1>
           <p>
             {warehouse
-              ? "Solicitudes para preparar, despachar y seguir hasta su recepcion."
-              : "Seguimiento de lo pedido, aprobado, despachado y recibido."}
+              ? "Solicitudes para preparar, despachar y seguir hasta su recepción."
+              : "Seguimiento de pedidos solicitados, en preparación, despachados y recibidos."}
           </p>
         </div>
         {!warehouse && (
-          <a className="order-primary" href="/orders/suggestions">
-            Nueva solicitud
+          <a className="order-primary" href="/replenishment">
+            + Nuevo pedido
           </a>
         )}
       </section>
-      {warehouse && (
+
+      {summary && (
         <section className="warehouse-summary">
           <button
-            className={filter === "pending" ? "is-active" : ""}
-            onClick={() => reset(setFilter, "pending")}
+            type="button"
+            className={filter === "" ? "is-active" : ""}
+            onClick={() => reset(setFilter, "")}
+          >
+            <span>Todos los pedidos</span>
+            <strong>
+              {fmt.format(
+                (summary.pending ?? 0) +
+                  (summary.inPreparation ?? 0) +
+                  (summary.dispatched ?? 0) +
+                  (summary.completed ?? 0),
+              )}
+            </strong>
+            <small>Total en circuito</small>
+          </button>
+          <button
+            type="button"
+            className={
+              filter === (warehouse ? "pending" : "CONFIRMED")
+                ? "is-active"
+                : ""
+            }
+            onClick={() =>
+              reset(setFilter, warehouse ? "pending" : "CONFIRMED")
+            }
           >
             <span>Pendientes</span>
-            <strong>{fmt.format(summary?.pending ?? 0)}</strong>
-            <small>Por iniciar</small>
+            <strong>{fmt.format(summary.pending ?? 0)}</strong>
+            <small>{warehouse ? "Por iniciar" : "En espera de depósito"}</small>
           </button>
           <button
-            className={filter === "preparing" ? "is-active" : ""}
-            onClick={() => reset(setFilter, "preparing")}
+            type="button"
+            className={
+              filter === (warehouse ? "preparing" : "IN_PREPARATION")
+                ? "is-active"
+                : ""
+            }
+            onClick={() =>
+              reset(setFilter, warehouse ? "preparing" : "IN_PREPARATION")
+            }
           >
-            <span>En preparacion</span>
-            <strong>{fmt.format(summary?.inPreparation ?? 0)}</strong>
-            <small>En trabajo</small>
+            <span>En preparación</span>
+            <strong>{fmt.format(summary.inPreparation ?? 0)}</strong>
+            <small>{warehouse ? "En trabajo" : "Armándose en depósito"}</small>
           </button>
           <button
-            className={filter === "ready" ? "is-active" : ""}
-            onClick={() => reset(setFilter, "ready")}
-          >
-            <span>Listos</span>
-            <strong>{fmt.format(summary?.readyToDispatch ?? 0)}</strong>
-            <small>Para despacho</small>
-          </button>
-          <button
-            className={filter === "dispatched" ? "is-active" : ""}
-            onClick={() => reset(setFilter, "dispatched")}
+            type="button"
+            className={
+              filter === (warehouse ? "dispatched" : "DISPATCHED")
+                ? "is-active"
+                : ""
+            }
+            onClick={() =>
+              reset(setFilter, warehouse ? "dispatched" : "DISPATCHED")
+            }
           >
             <span>Despachados</span>
-            <strong>{fmt.format(summary?.dispatched ?? 0)}</strong>
-            <small>Esperan PV</small>
+            <strong>{fmt.format(summary.dispatched ?? 0)}</strong>
+            <small>{warehouse ? "Esperan PV" : "En viaje / a recibir"}</small>
           </button>
           <button
-            className={filter === "completed" ? "is-active" : ""}
-            onClick={() => reset(setFilter, "completed")}
+            type="button"
+            className={
+              filter === (warehouse ? "completed" : "COMPLETED")
+                ? "is-active"
+                : ""
+            }
+            onClick={() =>
+              reset(setFilter, warehouse ? "completed" : "COMPLETED")
+            }
           >
             <span>Completados</span>
-            <strong>{fmt.format(summary?.completed ?? 0)}</strong>
-            <small>Circuito cerrado</small>
+            <strong>{fmt.format(summary.completed ?? 0)}</strong>
+            <small>Entregados</small>
           </button>
         </section>
       )}
+
       <section className="orders-controls">
         <label className="search">
           <span>Buscar</span>
           <input
             value={search}
             onChange={(event) => reset(setSearch, event.target.value)}
-            placeholder="Solicitud, articulo o descripcion"
+            placeholder="Buscar por nº (#21), artículo o descripción..."
           />
         </label>
         <label className="filter-select">
@@ -289,37 +329,37 @@ export function OrdersClient({
               ))
             ) : (
               <>
-                <option value="">Todos</option>
-                {Object.entries(labels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
+                <option value="">Todos los estados</option>
+                <option value="CONFIRMED">Pendiente de preparación</option>
+                <option value="IN_PREPARATION">En preparación</option>
+                <option value="DISPATCHED">Despachado</option>
+                <option value="COMPLETED">Completado</option>
+                <option value="CANCELLED">Cancelado</option>
               </>
             )}
           </select>
         </label>
         <label className="filter-select">
-          <span>PV origen</span>
+          <span>{warehouse ? "Sucursal origen" : "Sucursal"}</span>
           {warehouse ? (
             <select
               value={origin}
               onChange={(event) => reset(setOrigin, event.target.value)}
             >
-              <option value="">PV1 y PV2</option>
-              <option value="2">PV1</option>
-              <option value="3">PV2</option>
+              <option value="">Centro y Jardín</option>
+              <option value="2">Centro</option>
+              <option value="3">Jardín</option>
             </select>
           ) : (
             <select value={origin} disabled>
               <option value={String(branchId)}>
-                {branchDisplayName(branchId, "PV")}
+                {currentBranchName}
               </option>
             </select>
           )}
         </label>
         <label className="filter-select">
-          <span>Planificacion</span>
+          <span>Planificación</span>
           <input
             type="date"
             value={planning}
@@ -336,45 +376,45 @@ export function OrdersClient({
         <section className="orders-table-panel warehouse-table-panel">
           <div className="warehouse-table-head">
             <div>
-              <h2>{warehouse ? "Solicitudes de reposicion" : "Solicitudes"}</h2>
+              <h2>{warehouse ? "Solicitudes de depósito" : "Listado de pedidos"}</h2>
               <span>
                 {fmt.format(total)} resultado{total === 1 ? "" : "s"}
               </span>
             </div>
             <small>
               {warehouse
-                ? "Las solicitudes con accion pendiente aparecen primero."
-                : ""}
+                ? "Las solicitudes con acción pendiente aparecen primero."
+                : "Hacé click en \"Ver detalle\" para revisar productos o exportar a Excel."}
             </small>
           </div>
           <div className="orders-table-wrap">
             <table className="orders-table warehouse-table">
               <thead>
                 <tr>
-                  <th>Solicitud</th>
-                  <th>PV</th>
-                  <th>Planificacion</th>
-                  <th>Creada</th>
+                  <th>Pedido</th>
+                  <th>Sucursal</th>
+                  <th>Planificación</th>
+                  <th>Fecha</th>
                   <th>Estado</th>
                   <th>Progreso</th>
-                  <th>Accion siguiente</th>
+                  <th>Acción siguiente</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {rows.map((order) => (
                   <tr key={order.id}>
-                    <td data-label="Solicitud">
+                    <td data-label="Pedido">
                       <strong>#{order.id}</strong>
                       <small>
-                        {order.item_count} linea
-                        {order.item_count === 1 ? "" : "s"} · Reposicion interna
+                        {order.item_count} producto
+                        {order.item_count === 1 ? "" : "s"} · Reposición a depósito
                       </small>
                     </td>
-                    <td data-label="PV">
+                    <td data-label="Sucursal">
                       {branchDisplayName(order.origin_branch_id ?? 0, "PV")}
                     </td>
-                    <td data-label="Planificacion">
+                    <td data-label="Planificación">
                       {order.planning_date
                         ? new Date(order.planning_date).toLocaleDateString(
                             "es-AR",
@@ -382,7 +422,7 @@ export function OrdersClient({
                           )
                         : "-"}
                     </td>
-                    <td data-label="Creada">
+                    <td data-label="Fecha">
                       {new Date(order.created_at).toLocaleDateString("es-AR")}
                     </td>
                     <td data-label="Estado">
@@ -407,14 +447,14 @@ export function OrdersClient({
                         </small>
                       </div>
                     </td>
-                    <td data-label="Accion">
+                    <td data-label="Acción">
                       <span
                         className={`next-action ${order.status.toLowerCase()}`}
                       >
                         {next(order)}
                       </span>
                     </td>
-                    <td data-label="Abrir">
+                    <td data-label="Acciones">
                       <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                         <a
                           className="order-link"
@@ -424,7 +464,7 @@ export function OrdersClient({
                               : `/orders/${order.id}`
                           }
                         >
-                          Abrir
+                          Ver detalle
                         </a>
                         <button
                           type="button"
@@ -442,7 +482,20 @@ export function OrdersClient({
             </table>
           </div>
           {!rows.length && (
-            <p className="orders-empty">No hay solicitudes para este filtro.</p>
+            <div className="orders-empty-state">
+              <span className="empty-emoji">📦</span>
+              <h3>No se encontraron pedidos</h3>
+              <p>
+                {search || filter || planning
+                  ? "No hay pedidos que coincidan con los filtros aplicados. Podés limpiar la búsqueda o cambiar el estado."
+                  : "No tenés ningún pedido en curso para esta sucursal."}
+              </p>
+              {!warehouse && !search && !filter && !planning && (
+                <a className="order-primary" href="/replenishment">
+                  + Crear nuevo pedido desde Reposición
+                </a>
+              )}
+            </div>
           )}
           {pages > 1 && (
             <div className="orders-pagination">

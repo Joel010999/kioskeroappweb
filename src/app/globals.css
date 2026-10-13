@@ -215,3 +215,50 @@ button,input,select { font:inherit; } button { cursor:pointer; } button:disabled
   border-top: 1px solid #e2e8f0;
 }
 
+/* Orders Professional Polish & Empty State */
+.orders-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3.5rem 1.5rem;
+  text-align: center;
+  background: var(--panel);
+}
+.orders-empty-state .empty-emoji {
+  font-size: 2.8rem;
+  margin-bottom: 0.6rem;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.06));
+}
+.orders-empty-state h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.25rem;
+  color: var(--ink);
+  font-weight: 750;
+}
+.orders-empty-state p {
+  max-width: 46ch;
+  margin: 0 0 1.2rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+.warehouse-table td[data-label="Acciones"] .order-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.65rem;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+  text-decoration: none;
+  transition: all 0.15s ease;
+}
+.warehouse-table td[data-label="Acciones"] .order-link:hover {
+  background: var(--navy);
+  border-color: var(--navy);
+  color: #ffffff;
+}
+

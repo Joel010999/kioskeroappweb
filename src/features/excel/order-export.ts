@@ -1,4 +1,5 @@
 import * as xlsx from "xlsx";
+import { resolveRubroName } from "@/server/catalog/rubros";
 
 export type ReplenishmentExportItem = {
   article_id: number;
@@ -68,7 +69,7 @@ export function buildReplenishmentWorkbook(params: {
     aoa.push([
       item.article_id,
       item.description || `Artículo ${item.article_id}`,
-      item.rubro || item.classification_code || "Sin rubro",
+      resolveRubroName(item.classification_code, item.rubro),
       item.stock_current,
       item.stock_depot !== null ? item.stock_depot : "-",
       sug,
@@ -184,7 +185,7 @@ export function buildOrderWorkbook(params: {
     aoa.push([
       item.article_id,
       item.product_name_snapshot,
-      item.classification_code_snapshot || "Sin rubro",
+      resolveRubroName(item.classification_code_snapshot),
       item.requested_quantity,
       item.approved_quantity !== null ? item.approved_quantity : "-",
       item.prepared_quantity !== null ? item.prepared_quantity : "-",

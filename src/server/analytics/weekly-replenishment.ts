@@ -6,6 +6,7 @@ import {
   type WeeklyReplenishmentStatus,
 } from "./weekly-replenishment-rules";
 import type { SupplyMode } from "@/server/supply/branch-supply-rules";
+import { SQL_RUBRO_EXPRESSION } from "@/server/catalog/rubros";
 
 export const WEEKLY_REPLENISHMENT_WEEKS = 6;
 
@@ -128,8 +129,12 @@ export async function getWeeklyReplenishment(options: {
   ];
 
   let rubroClause = "";
-  if (options.rubro === "__SIN_RUBRO__") {
-    rubroClause = "AND (rubro IS NULL OR rubro = '')";
+  if (
+    options.rubro === "__SIN_RUBRO__" ||
+    options.rubro === "SIN_RUBRO" ||
+    options.rubro === "SIN RUBRO"
+  ) {
+    rubroClause = "AND (rubro IS NULL OR rubro = '' OR rubro = 'SIN RUBRO')";
   } else if (options.rubro) {
     values.push(options.rubro);
     rubroClause = `AND rubro = $${values.length}`;
@@ -199,7 +204,7 @@ export async function getWeeklyReplenishment(options: {
     ), items_base AS (
       SELECT p.article_id, p.payload->>'Descripcion' AS description, p.payload->>'Proveedor' AS supplier_code,
         p.payload->>'Clasificacion' AS classification_code,
-        COALESCE(NULLIF(btrim(p.payload->>'Rubro'), ''), NULLIF(btrim(p.payload->>'Clasificacion'), '')) AS rubro,
+        ${SQL_RUBRO_EXPRESSION} AS rubro,
         p.payload->>'UnidadMedida' AS unit_measure,
         COALESCE(sp.current_stock, 0) AS stock_current, sd.depot_stock, m.weekly_demand, m.weekly_average, m.weekly_max, m.weekly_min, m.active_weeks,
         COALESCE(sr.supply_mode, 'UNDEFINED') AS supply_mode,
@@ -242,10 +247,9 @@ export async function getWeeklyReplenishment(options: {
   let rubros: string[] = [];
   try {
     const rubrosResult = await query<{ rubro: string }>(
-      `SELECT DISTINCT COALESCE(NULLIF(btrim(p.payload->>'Rubro'), ''), NULLIF(btrim(p.payload->>'Clasificacion'), '')) AS rubro
+      `SELECT DISTINCT ${SQL_RUBRO_EXPRESSION} AS rubro
        FROM products_raw p
        WHERE p.organization_id = $1 AND p.source_id = $2 AND p.branch_id = $3 AND p.is_present
-         AND COALESCE(NULLIF(btrim(p.payload->>'Rubro'), ''), NULLIF(btrim(p.payload->>'Clasificacion'), '')) IS NOT NULL
        ORDER BY rubro ASC`,
       [options.scope.organizationId, options.scope.sourceId, options.scope.branchId]
     );
@@ -254,11 +258,20 @@ export async function getWeeklyReplenishment(options: {
     // Graceful fallback if distinct query fails in isolated test fixtures
   }
 
+  const branchLabel =
+    options.scope.branchId === 2
+      ? "Centro"
+      : options.scope.branchId === 3
+        ? "Jardín"
+        : options.scope.branchId === 1
+          ? "Depósito"
+          : `Sucursal ${options.scope.branchId}`;
+
   return {
     planning_date: options.planningDate,
     location: {
       branch_id: options.scope.branchId,
-      label: `Sucursal ${options.scope.branchId}`,
+      label: branchLabel,
     },
     window_weeks: WEEKLY_REPLENISHMENT_WEEKS,
     total: result.rows[0] ? Number(result.rows[0].total_rows) : 0,

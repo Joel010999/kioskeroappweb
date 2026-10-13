@@ -11,10 +11,9 @@ type NavigationItem = { href: string; label: string };
 const navigationByRole: Record<NavigationRole, NavigationItem[]> = {
   PV: [
     { href: "/dashboard", label: "Resumen" },
-    { href: "/workspaces", label: "Mis Pedidos" },
+    { href: "/orders", label: "Mis Pedidos" },
     { href: "/replenishment", label: "Reposición" },
     { href: "/supply-rules", label: "Abastecimiento" },
-    { href: "/orders", label: "Pedidos" },
   ],
   WAREHOUSE: [
     { href: "/dashboard", label: "Resumen" },
@@ -29,7 +28,6 @@ export function navigationForRole(role: NavigationRole): NavigationItem[] {
 
 export function isNavigationActive(pathname: string, href: string): boolean {
   if (href === "/dashboard") return pathname === href;
-  if (href === "/workspaces") return pathname.startsWith("/workspaces");
   if (href === "/replenishment") return pathname === href;
   if (href === "/supply-rules") return pathname === href;
   if (href === "/orders")
@@ -38,9 +36,9 @@ export function isNavigationActive(pathname: string, href: string): boolean {
 }
 
 export function branchDisplayName(branchId: number, role: NavigationRole): string {
-  if (role === "WAREHOUSE" || branchId === 1) return "DEPÓSITO";
-  if (branchId === 2) return "PV1";
-  if (branchId === 3) return "PV2";
+  if (role === "WAREHOUSE" || branchId === 1) return "Depósito";
+  if (branchId === 2) return "Centro";
+  if (branchId === 3) return "Jardín";
   return "Punto autorizado";
 }
 
