@@ -7,7 +7,18 @@ export async function apiResponse<T>(handler: () => Promise<T>) {
     const result = await handler();
     return result instanceof Response ? result : NextResponse.json(result);
   } catch (error) {
-    if (error instanceof AuthorizationError) return NextResponse.json({ error: error.code }, { status: error.code === "UNAUTHENTICATED" ? 401 : error.code === "FORBIDDEN" ? 403 : 404 });
+    if (error instanceof AuthorizationError) {
+      const message =
+        error.code === "UNAUTHENTICATED"
+          ? "Tu sesión ha expirado o no es válida. Por favor, volvé a iniciar sesión para continuar."
+          : error.code === "FORBIDDEN"
+            ? "No tenés permisos para realizar esta acción."
+            : "Recurso no encontrado.";
+      return NextResponse.json(
+        { error: error.code, message },
+        { status: error.code === "UNAUTHENTICATED" ? 401 : error.code === "FORBIDDEN" ? 403 : 404 }
+      );
+    }
     if (error instanceof RequestValidationError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

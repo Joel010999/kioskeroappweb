@@ -27,11 +27,23 @@ export async function GET(request: Request) {
     if (pageSize > 100) throw new RequestValidationError("page_size cannot exceed 100.");
     if (status && !(weeklyReplenishmentStatuses as readonly string[]).includes(status)) throw new RequestValidationError("status is not valid.");
     const filters = ["WITH_SUGGESTION", "NO_SUGGESTION", "REVIEW_REQUIRED", "NO_DEMAND", "INSUFFICIENT_HISTORY", "IRREGULAR_DEMAND", "ZERO_STOCK", "NEGATIVE_STOCK", "DEPOT_POSITIVE", "DEPOT_ZERO", "DEPOT_NEGATIVE", "DEPOT_NO_ROW", "DEPOT_NOT_POSITIVE", "SUGGESTION_EXCEEDS_DEPOT", "SUPPLY_DEPOT", "SUPPLY_DIRECT_SUPPLIER", "SUPPLY_UNDEFINED", "TO_REPLENISH"] as const;
-    const sorts = ["SUGGESTED_DESC", "DEMAND_DESC", "STOCK_ASC", "DEPOT_GAP_DESC"] as const;
+    const sorts = ["SUGGESTED_DESC", "DEMAND_DESC", "STOCK_ASC", "DEPOT_GAP_DESC", "RUBRO_ASC"] as const;
     if (filter && !(filters as readonly string[]).includes(filter)) throw new RequestValidationError("filter is not valid.");
     if (sort && !(sorts as readonly string[]).includes(sort)) throw new RequestValidationError("sort is not valid.");
+    const rubro = params.get("rubro")?.trim() || undefined;
     const depotSourceId = await getSourceForBranch(scope.organizationId ?? context.organizationId, DEPOT_BRANCH_ID);
-    const data = await getWeeklyReplenishment({ scope, depotSourceId, planningDate, search: parseSearch(params.get("search")), status: status as WeeklyReplenishmentStatus | undefined, filter: filter as WeeklyReplenishmentFilter | undefined, sort: sort as WeeklyReplenishmentSort | undefined, limit: pageSize, offset: (page - 1) * pageSize });
+    const data = await getWeeklyReplenishment({
+      scope,
+      depotSourceId,
+      planningDate,
+      search: parseSearch(params.get("search")),
+      status: status as WeeklyReplenishmentStatus | undefined,
+      filter: filter as WeeklyReplenishmentFilter | undefined,
+      sort: sort as WeeklyReplenishmentSort | undefined,
+      rubro,
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+    });
     return { ...data, page, page_size: pageSize };
   });
 }

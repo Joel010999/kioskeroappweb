@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const AUTH_SESSION_COOKIE = "quiosquero_session";
-const protectedPrefixes = ["/dashboard", "/replenishment", "/orders", "/supply-rules"];
+const protectedPrefixes = ["/dashboard", "/replenishment", "/orders", "/supply-rules", "/workspaces"];
 
 export function proxy(request: NextRequest) {
   const isProtected = protectedPrefixes.some((prefix) => request.nextUrl.pathname === prefix || request.nextUrl.pathname.startsWith(`${prefix}/`));
@@ -9,4 +9,4 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/dashboard/:path*", "/replenishment/:path*", "/orders/:path*", "/supply-rules/:path*"] };
+export const config = { matcher: ["/dashboard/:path*", "/replenishment/:path*", "/orders/:path*", "/supply-rules/:path*", "/workspaces/:path*"] };

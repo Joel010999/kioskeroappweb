@@ -10,6 +10,7 @@ describe("navigation proxy", () => {
     "/orders",
     "/orders/warehouse",
     "/supply-rules",
+    "/workspaces",
   ])("redirects %s to login when the session cookie is absent", (path) => {
     const response = proxy(new NextRequest(`https://monica.local${path}`));
     expect(response.headers.get("location")).toBe("https://monica.local/login");

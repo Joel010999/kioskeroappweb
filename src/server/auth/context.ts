@@ -11,12 +11,20 @@ type SessionPayload = { userId: number; organizationId: number; expiresAt: numbe
 function encode(payload: SessionPayload) { return Buffer.from(JSON.stringify(payload)).toString("base64url"); }
 function sign(encoded: string, secret: string) { return createHmac("sha256", secret).update(encoded).digest("base64url"); }
 
-export function createDevelopmentSessionToken(userId: number, organizationId: number, secret: string, expiresAt = Date.now() + 8 * 60 * 60 * 1000) {
+export const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days for retail POS continuity
+export const SESSION_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+export function createDevelopmentSessionToken(
+  userId: number,
+  organizationId: number,
+  secret: string,
+  expiresAt = Date.now() + SESSION_DURATION_MS
+) {
   const encoded = encode({ userId, organizationId, expiresAt });
   return `${encoded}.${sign(encoded, secret)}`;
 }
 
-function parseSession(token: string, secret: string): SessionPayload {
+export function parseSession(token: string, secret: string): SessionPayload {
   const [encoded, signature, extra] = token.split(".");
   if (!encoded || !signature || extra) throw new UnauthenticatedError("Session is invalid.");
   const expected = sign(encoded, secret);
@@ -25,9 +33,17 @@ function parseSession(token: string, secret: string): SessionPayload {
   if (receivedBytes.length !== expectedBytes.length || !timingSafeEqual(receivedBytes, expectedBytes)) throw new UnauthenticatedError("Session is invalid.");
   try {
     const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as SessionPayload;
-    if (!Number.isSafeInteger(payload.userId) || !Number.isSafeInteger(payload.organizationId) || !Number.isFinite(payload.expiresAt) || payload.expiresAt <= Date.now()) throw new Error();
+    if (!Number.isSafeInteger(payload.userId) || !Number.isSafeInteger(payload.organizationId) || !Number.isFinite(payload.expiresAt)) {
+      throw new Error("Invalid session payload.");
+    }
+    if (payload.expiresAt <= Date.now()) {
+      throw new UnauthenticatedError("Session has expired. Please log in again.");
+    }
     return payload;
-  } catch { throw new UnauthenticatedError("Session is invalid or expired."); }
+  } catch (cause) {
+    if (cause instanceof UnauthenticatedError) throw cause;
+    throw new UnauthenticatedError("Session is invalid or expired.");
+  }
 }
 
 export async function getCurrentUser(): Promise<AuthorizationContext> {

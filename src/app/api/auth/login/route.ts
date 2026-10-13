@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { AUTH_SESSION_COOKIE, createDevelopmentSessionToken } from "@/server/auth/context";
+import {
+  AUTH_SESSION_COOKIE,
+  createDevelopmentSessionToken,
+  SESSION_COOKIE_MAX_AGE_SECONDS,
+} from "@/server/auth/context";
 import { verifyPassword } from "@/server/auth/passwords";
 import { query } from "@/server/db/client";
 import { RequestValidationError } from "@/server/validation/request";
@@ -21,7 +25,17 @@ export async function POST(request: Request) {
     const secret = process.env.AUTH_SESSION_SECRET;
     if (!secret) throw new Error("AUTH_SESSION_SECRET must be configured.");
     const response = NextResponse.json({ ok: true });
-    response.cookies.set(AUTH_SESSION_COOKIE, createDevelopmentSessionToken(Number(record.id), record.organization_id, secret), { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 8 * 60 * 60 });
+    response.cookies.set(
+      AUTH_SESSION_COOKIE,
+      createDevelopmentSessionToken(Number(record.id), record.organization_id, secret),
+      {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/",
+        maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
+      }
+    );
     return response;
   });
 }

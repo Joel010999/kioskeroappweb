@@ -7,6 +7,7 @@ import {
   branchDisplayName,
   OperationsNavigation,
 } from "@/features/navigation/operations-navigation";
+import { downloadOrderExcel } from "@/features/excel/order-export";
 
 type Status =
   | "DRAFT"
@@ -19,6 +20,7 @@ type Item = {
   id: number;
   article_id: number;
   product_name_snapshot: string;
+  classification_code_snapshot?: string | null;
   requested_quantity: number;
   approved_quantity: number | null;
   prepared_quantity: number | null;
@@ -174,6 +176,23 @@ export function OrdersClient({
   useEffect(() => {
     void load();
   }, [filter, origin, planning, search, page]);
+  const exportOrderFromList = async (order: Order) => {
+    try {
+      const fullOrder = await api(`/api/orders/${order.id}`);
+      downloadOrderExcel({
+        orderId: fullOrder.id,
+        status: labels[fullOrder.status as Status] || fullOrder.status,
+        branchLabel: branchDisplayName(fullOrder.origin_branch_id ?? 0, "PV"),
+        planningDate: fullOrder.planning_date?.slice(0, 10),
+        items: fullOrder.items ?? [],
+      });
+    } catch (err: unknown) {
+      alert(
+        "Error al exportar orden: " +
+          (err instanceof Error ? err.message : "Error desconocido"),
+      );
+    }
+  };
   const reset = (setter: (value: string) => void, value: string) => {
     setter(value);
     setPage(1);
@@ -396,16 +415,26 @@ export function OrdersClient({
                       </span>
                     </td>
                     <td data-label="Abrir">
-                      <a
-                        className="order-link"
-                        href={
-                          warehouse
-                            ? `/orders/warehouse/${order.id}`
-                            : `/orders/${order.id}`
-                        }
-                      >
-                        Abrir
-                      </a>
+                      <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                        <a
+                          className="order-link"
+                          href={
+                            warehouse
+                              ? `/orders/warehouse/${order.id}`
+                              : `/orders/${order.id}`
+                          }
+                        >
+                          Abrir
+                        </a>
+                        <button
+                          type="button"
+                          className="order-export-btn-sm"
+                          onClick={() => void exportOrderFromList(order)}
+                          title={`Exportar pedido #${order.id} a Excel (.xlsx)`}
+                        >
+                          📊 Excel
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -622,9 +651,27 @@ export function OrderDetailClient({
             {new Date(order.created_at).toLocaleDateString("es-AR")}
           </p>
         </div>
-        <span className={`order-status ${order.status.toLowerCase()}`}>
-          {difference ? "Completado con diferencia" : labels[order.status]}
-        </span>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="order-export-btn"
+            onClick={() =>
+              downloadOrderExcel({
+                orderId: order.id,
+                status: difference ? "Completado con diferencia" : labels[order.status],
+                branchLabel: branchDisplayName(order.origin_branch_id ?? 0, "PV"),
+                planningDate: order.planning_date?.slice(0, 10),
+                items: order.items ?? [],
+              })
+            }
+            title="Exportar este pedido a planilla Excel (.xlsx)"
+          >
+            📊 Exportar a Excel
+          </button>
+          <span className={`order-status ${order.status.toLowerCase()}`}>
+            {difference ? "Completado con diferencia" : labels[order.status]}
+          </span>
+        </div>
       </section>
       {error && <section className="orders-error">{error}</section>}
       <section className="order-steps">
@@ -684,6 +731,7 @@ export function OrderDetailClient({
                     <td data-label="Producto">
                       <strong>{item.product_name_snapshot}</strong>
                       <small>
+                        {item.classification_code_snapshot ? `${item.classification_code_snapshot} · ` : ""}
                         {item.unit_measure_snapshot ?? "Sin unidad registrada"}
                       </small>
                     </td>
