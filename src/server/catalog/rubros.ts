@@ -153,3 +153,57 @@ CASE
   ELSE 'SIN RUBRO'
 END
 `.trim();
+
+/**
+ * Determina si un rubro corresponde a "Sin rubro" (nulo, vacío o explicitado como tal).
+ */
+export function isSinRubro(rubro?: string | null): boolean {
+  if (!rubro) return true;
+  const normalized = rubro.trim().toLowerCase();
+  return normalized === "" || normalized === "sin rubro" || normalized === "__sin_rubro__";
+}
+
+/**
+ * Comparador alfabético de rubros de A a Z consistente con el idioma español
+ * (insensible a mayúsculas/minúsculas y acentos), ubicando siempre "Sin rubro" al final.
+ */
+export function compareRubros(a?: string | null, b?: string | null): number {
+  const aSinRubro = isSinRubro(a);
+  const bSinRubro = isSinRubro(b);
+
+  if (aSinRubro && bSinRubro) return 0;
+  if (aSinRubro) return 1; // "Sin rubro" va al final
+  if (bSinRubro) return -1;
+
+  return (a ?? "").trim().localeCompare((b ?? "").trim(), "es", { sensitivity: "base" });
+}
+
+/**
+ * Comparador unificado para ordenar elementos primero por Rubro (A a Z, "Sin rubro" al final)
+ * y luego por Descripción del producto (A a Z).
+ */
+export function compareByRubroAndProduct(
+  a: { rubro?: string | null; description?: string | null; product_name_snapshot?: string | null; article_id?: number },
+  b: { rubro?: string | null; description?: string | null; product_name_snapshot?: string | null; article_id?: number }
+): number {
+  const rubroComparison = compareRubros(a.rubro, b.rubro);
+  if (rubroComparison !== 0) return rubroComparison;
+
+  const descA = (a.description || a.product_name_snapshot || "").trim();
+  const descB = (b.description || b.product_name_snapshot || "").trim();
+  const descComparison = descA.localeCompare(descB, "es", { sensitivity: "base" });
+  if (descComparison !== 0) return descComparison;
+
+  return (a.article_id ?? 0) - (b.article_id ?? 0);
+}
+
+/**
+ * Expresión SQL para ordenar de forma consistente por Rubro A-Z ("SIN RUBRO" al final) y luego Producto A-Z.
+ */
+export const SQL_ORDER_BY_RUBRO_AND_PRODUCT = `
+  CASE WHEN rubro IS NULL OR btrim(rubro) = '' OR UPPER(btrim(rubro)) IN ('SIN RUBRO', '__SIN_RUBRO__') THEN 1 ELSE 0 END ASC,
+  LOWER(rubro) ASC,
+  LOWER(description) ASC,
+  article_id ASC
+`.trim();
+

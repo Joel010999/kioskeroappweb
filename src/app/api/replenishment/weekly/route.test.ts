@@ -140,4 +140,26 @@ describe("GET /api/replenishment/weekly", () => {
       }),
     );
   });
+
+  it("passes supplier filter to getWeeklyReplenishment", async () => {
+    getWeeklyReplenishment.mockResolvedValue({
+      items: [],
+      total: 0,
+      rubros: ["ALMACEN"],
+      suppliers: ["50350", "600207"],
+    });
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/replenishment/weekly?branch_id=2&planning_date=2026-09-12&supplier=50350",
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(getWeeklyReplenishment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        supplier: "50350",
+      }),
+    );
+  });
 });

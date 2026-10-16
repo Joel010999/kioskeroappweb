@@ -31,6 +31,7 @@ export async function GET(request: Request) {
     if (filter && !(filters as readonly string[]).includes(filter)) throw new RequestValidationError("filter is not valid.");
     if (sort && !(sorts as readonly string[]).includes(sort)) throw new RequestValidationError("sort is not valid.");
     const rubro = params.get("rubro")?.trim() || undefined;
+    const supplier = params.get("supplier")?.trim() || undefined;
     const depotSourceId = await getSourceForBranch(scope.organizationId ?? context.organizationId, DEPOT_BRANCH_ID);
     const data = await getWeeklyReplenishment({
       scope,
@@ -41,6 +42,7 @@ export async function GET(request: Request) {
       filter: filter as WeeklyReplenishmentFilter | undefined,
       sort: sort as WeeklyReplenishmentSort | undefined,
       rubro,
+      supplier,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });

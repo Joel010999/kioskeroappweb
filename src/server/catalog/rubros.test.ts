@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveRubroName, CANONICAL_RUBROS } from "./rubros";
+import { resolveRubroName, CANONICAL_RUBROS, compareRubros, compareByRubroAndProduct } from "./rubros";
 
 describe("catalog/rubros", () => {
   it("resolves specific cigarette codes mentioned in user report", () => {
@@ -46,4 +46,39 @@ describe("catalog/rubros", () => {
     expect(CANONICAL_RUBROS).toContain("ALMACEN");
     expect(CANONICAL_RUBROS).toContain("BEBIDAS");
   });
+
+  it("sorts rubros alphabetically A to Z and places Sin rubro at the end", () => {
+    const rubros = ["GALLETITAS", "Sin rubro", "BEBIDAS", null, "ALMACEN", ""];
+    const sorted = [...rubros].sort(compareRubros);
+    expect(sorted.slice(0, 3)).toEqual(["ALMACEN", "BEBIDAS", "GALLETITAS"]);
+    // Null, empty, and "Sin rubro" must be at the end
+    expect(sorted.slice(3).every((r) => !r || r.toLowerCase() === "sin rubro")).toBe(true);
+  });
+
+  it("sorts rubros case and accent insensitively", () => {
+    expect(compareRubros("Árboles", "Bar")).toBeLessThan(0);
+    expect(compareRubros("almacen", "BEBIDAS")).toBeLessThan(0);
+  });
+
+  it("sorts products by rubro A-Z, then by product description A-Z within rubro", () => {
+    const items = [
+      { article_id: 1, rubro: "GALLETITAS", description: "Oreo" },
+      { article_id: 2, rubro: null, description: "Cosa sin rubro A" },
+      { article_id: 3, rubro: "ALMACEN", description: "Yerba Rosamonte" },
+      { article_id: 4, rubro: "ALMACEN", description: "Aceite Cañuelas" },
+      { article_id: 5, rubro: "GALLETITAS", description: "Chocolinas" },
+      { article_id: 6, rubro: "Sin rubro", description: "Cosa sin rubro B" },
+    ];
+
+    const sorted = [...items].sort(compareByRubroAndProduct);
+    expect(sorted.map((i) => i.description)).toEqual([
+      "Aceite Cañuelas", // ALMACEN
+      "Yerba Rosamonte", // ALMACEN
+      "Chocolinas",      // GALLETITAS
+      "Oreo",            // GALLETITAS
+      "Cosa sin rubro A", // Sin rubro
+      "Cosa sin rubro B", // Sin rubro
+    ]);
+  });
 });
+

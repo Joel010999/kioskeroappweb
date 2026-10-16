@@ -21,8 +21,9 @@ describe("Excel Export Module", () => {
           suggested_quantity: 48,
           requested_quantity: 48,
           supply_mode: "DEPOT",
-          supplier_code: null,
-          unit_measure: "UN",
+          supplier_code: "PROV1",
+          unit_measure: "1 UN",
+          package_units: 1,
         },
         {
           article_id: 202,
@@ -34,8 +35,9 @@ describe("Excel Export Module", () => {
           suggested_quantity: 24,
           requested_quantity: 36,
           supply_mode: "DEPOT",
-          supplier_code: null,
-          unit_measure: "UN",
+          supplier_code: "PROV2",
+          unit_measure: "1 UN",
+          package_units: 6,
         },
       ];
 
@@ -63,51 +65,122 @@ describe("Excel Export Module", () => {
         "Código",
         "Descripción",
         "Rubro",
+        "Proveedor",
+        "Presentación",
+        "Bulto (Equiv.)",
         "Stock Sucursal",
-        "Stock Depósito",
+        "Stock Depósito Central",
         "Sugerida",
         "Solicitada",
         "Abastecimiento",
-        "Proveedor",
         "Unidad",
       ]);
 
-      // Check first product row
+      // Check first product row (GOLOSINAS appears before Sin rubro)
       const firstProductRow = rows[4];
       expect(firstProductRow[0]).toBe(101);
       expect(firstProductRow[1]).toBe("ALFAJOR TRIPLE CHOCOLATE");
       expect(firstProductRow[2]).toBe("GOLOSINAS");
-      expect(firstProductRow[3]).toBe(12);
-      expect(firstProductRow[4]).toBe(150);
-      expect(firstProductRow[5]).toBe(48);
-      expect(firstProductRow[6]).toBe(48);
-      expect(firstProductRow[7]).toBe("DEPÓSITO");
+      expect(firstProductRow[3]).toBe("PROV1");
+      expect(firstProductRow[4]).toBe("Unidad");
+      expect(firstProductRow[5]).toBe("-");
+      expect(firstProductRow[6]).toBe(12);
+      expect(firstProductRow[7]).toBe(150);
+      expect(firstProductRow[8]).toBe(48);
+      expect(firstProductRow[9]).toBe(48);
+      expect(firstProductRow[10]).toBe("DEPÓSITO");
 
-      // Check second product with null rubro
+      // Check second product with null rubro (placed at end under Sin rubro)
       const secondProductRow = rows[5];
       expect(secondProductRow[0]).toBe(202);
       expect(secondProductRow[2]).toBe("Sin rubro");
-      expect(secondProductRow[6]).toBe(36);
+      expect(secondProductRow[4]).toBe("Bulto (6 u.)");
+      expect(secondProductRow[5]).toBe("6 u.");
+      expect(secondProductRow[9]).toBe(36);
 
       // Check totals row
       const totalsRow = rows[rows.length - 1];
       expect(totalsRow[0]).toBe("TOTALES");
       expect(totalsRow[1]).toBe("2 productos");
-      // Total sugerido: 48 + 24 = 72
-      expect(totalsRow[5]).toBe(72);
-      // Total solicitado: 48 + 36 = 84
-      expect(totalsRow[6]).toBe(84);
+      // Total sugerido: 48 + 24 = 72 (column index 8)
+      expect(totalsRow[8]).toBe(72);
+      // Total solicitado: 48 + 36 = 84 (column index 9)
+      expect(totalsRow[9]).toBe(84);
+    });
+
+    it("sorts items alphabetically by rubro A-Z, then by product A-Z, with Sin rubro at the end", () => {
+      const items: ReplenishmentExportItem[] = [
+        {
+          article_id: 1,
+          description: "Yerba 500g",
+          rubro: "ALMACEN",
+          stock_current: 5,
+          stock_depot: 20,
+          suggested_quantity: 10,
+          requested_quantity: 10,
+          supply_mode: "DEPOT",
+        },
+        {
+          article_id: 2,
+          description: "Sin Rubro Item",
+          rubro: "Sin rubro",
+          stock_current: 1,
+          stock_depot: 10,
+          suggested_quantity: 2,
+          requested_quantity: 2,
+          supply_mode: "DEPOT",
+        },
+        {
+          article_id: 3,
+          description: "Aceite 900ml",
+          rubro: "ALMACEN",
+          stock_current: 3,
+          stock_depot: 15,
+          suggested_quantity: 5,
+          requested_quantity: 5,
+          supply_mode: "DEPOT",
+        },
+        {
+          article_id: 4,
+          description: "Chocolates Barra",
+          rubro: "CHOCOLATES",
+          stock_current: 2,
+          stock_depot: 30,
+          suggested_quantity: 8,
+          requested_quantity: 8,
+          supply_mode: "DEPOT",
+        },
+      ];
+
+      const wb = buildReplenishmentWorkbook({
+        items,
+        branchLabel: "Centro",
+        planningDate: "2026-10-15",
+      });
+      const ws = wb.Sheets["Reposición"];
+      const rows = xlsx.utils.sheet_to_json<any[]>(ws, { header: 1 });
+      const productRows = rows.slice(4, 8);
+
+      expect(productRows.map((r) => r[1])).toEqual([
+        "Aceite 900ml",      // ALMACEN (A)
+        "Yerba 500g",        // ALMACEN (Y)
+        "Chocolates Barra",  // CHOCOLATES
+        "Sin Rubro Item",    // Sin rubro (at the end)
+      ]);
     });
   });
 
   describe("buildOrderWorkbook", () => {
-    it("generates a valid order workbook with operational quantities", () => {
+    it("generates a valid order workbook with operational quantities, provider, presentation and central depot stock", () => {
       const mockOrderItems: OrderExportItem[] = [
         {
           id: 1,
           article_id: 301,
           product_name_snapshot: "CHICLES MENTA",
           classification_code_snapshot: "CARAMELOS",
+          supplier_code_snapshot: "50350",
+          package_units: 1,
+          stock_depot: 250,
           requested_quantity: 50,
           approved_quantity: 50,
           prepared_quantity: 45,
@@ -120,12 +193,15 @@ describe("Excel Export Module", () => {
           article_id: 302,
           product_name_snapshot: "PAPAS FRITAS 100G",
           classification_code_snapshot: null,
+          supplier_code_snapshot: "600207",
+          package_units: 18,
+          stock_depot: 90,
           requested_quantity: 20,
           approved_quantity: 15,
           prepared_quantity: 15,
           dispatched_quantity: 15,
           received_quantity: 15,
-          unit_measure_snapshot: "PAQ",
+          unit_measure_snapshot: "1 UN",
         },
       ];
 
@@ -151,6 +227,10 @@ describe("Excel Export Module", () => {
         "Código",
         "Descripción",
         "Rubro",
+        "Proveedor",
+        "Presentación",
+        "Bulto (Equiv.)",
+        "Stock Depósito Central",
         "Solicitado",
         "Aprobado",
         "Preparado",
@@ -163,28 +243,36 @@ describe("Excel Export Module", () => {
       expect(item1[0]).toBe(301);
       expect(item1[1]).toBe("CHICLES MENTA");
       expect(item1[2]).toBe("CARAMELOS");
-      expect(item1[3]).toBe(50);
-      expect(item1[4]).toBe(50);
-      expect(item1[5]).toBe(45);
-      expect(item1[6]).toBe(45);
-      expect(item1[7]).toBe(45);
+      expect(item1[3]).toBe("50350");
+      expect(item1[4]).toBe("Unidad");
+      expect(item1[5]).toBe("-");
+      expect(item1[6]).toBe(250); // Stock Depósito Central
+      expect(item1[7]).toBe(50);
+      expect(item1[8]).toBe(50);
+      expect(item1[9]).toBe(45);
+      expect(item1[10]).toBe(45);
+      expect(item1[11]).toBe(45);
 
       const item2 = rows[5];
       expect(item2[0]).toBe(302);
       expect(item2[2]).toBe("Sin rubro");
-      expect(item2[3]).toBe(20);
-      expect(item2[4]).toBe(15);
-      expect(item2[8]).toBe("PAQ");
+      expect(item2[3]).toBe("600207");
+      expect(item2[4]).toBe("Bulto (18 u.)");
+      expect(item2[5]).toBe("18 u.");
+      expect(item2[6]).toBe(90); // Stock Depósito Central
+      expect(item2[7]).toBe(20);
+      expect(item2[8]).toBe(15);
+      expect(item2[12]).toBe("1 UN");
 
       const totalsRow = rows[rows.length - 1];
       expect(totalsRow[0]).toBe("TOTALES");
       expect(totalsRow[1]).toBe("2 productos");
       // Total solicitado: 70
-      expect(totalsRow[3]).toBe(70);
+      expect(totalsRow[7]).toBe(70);
       // Total aprobado: 65
-      expect(totalsRow[4]).toBe(65);
+      expect(totalsRow[8]).toBe(65);
       // Total preparado: 60
-      expect(totalsRow[5]).toBe(60);
+      expect(totalsRow[9]).toBe(60);
     });
 
     it("does not mutate original items array or object properties during export", () => {

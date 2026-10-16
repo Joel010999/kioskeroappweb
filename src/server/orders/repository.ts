@@ -4,23 +4,69 @@ import type { Scope } from "@/server/analytics/types";
 import { query, withTransaction } from "@/server/db/client";
 import { RequestValidationError } from "@/server/validation/request";
 import { canEditOrder, isOperationalQuantityValid, transitionEvent, type OrderEventType, type OrderStatus } from "./rules";
+import { resolveRubroName, compareByRubroAndProduct } from "@/server/catalog/rubros";
+import { resolveProductPresentation } from "@/server/catalog/presentations";
 
 type OrderRow = { id: string; order_number?: string | number | null; organization_id: number | null; source_id: string; branch_id: number; status: OrderStatus; created_by: string | null; created_at: string; updated_at: string; confirmed_by: string | null; confirmed_at: string | null; completed_at: string | null; notes: string; order_type: string; origin_branch_id: number | null; destination_branch_id: number | null; planning_date: string | null; item_count: string; requested_units: string; approved_units: string; prepared_units: string; dispatched_units: string; received_units: string };
-type ItemRow = { id: string; order_id: string; article_id: number; product_name_snapshot: string; suggested_quantity: string | null; requested_quantity: string; stock_at_creation: string; stock_target_at_creation: string | null; confidence_at_creation: string; status_at_creation: string; weekly_demand_at_creation: string | null; planning_date_at_creation: string | null; supplier_code_snapshot: string | null; classification_code_snapshot: string | null; unit_measure_snapshot: string | null; approved_quantity: string | null; prepared_quantity: string | null; dispatched_quantity: string | null; received_quantity: string | null; created_at: string; updated_at: string };
+type ItemRow = { id: string; order_id: string; article_id: number; product_name_snapshot: string; suggested_quantity: string | null; requested_quantity: string; stock_at_creation: string; stock_target_at_creation: string | null; confidence_at_creation: string; status_at_creation: string; weekly_demand_at_creation: string | null; planning_date_at_creation: string | null; supplier_code_snapshot: string | null; classification_code_snapshot: string | null; unit_measure_snapshot: string | null; package_units_snapshot?: string | null; bulto_catalog?: string | null; stock_depot?: string | null; approved_quantity: string | null; prepared_quantity: string | null; dispatched_quantity: string | null; received_quantity: string | null; created_at: string; updated_at: string };
 type EventRow = { id: string; order_id: string; event_type: OrderEventType; user_id: string | null; actor_name: string | null; actor_email: string | null; metadata: Record<string, unknown>; created_at: string };
 
-export type OrderItem = Omit<ItemRow, "id" | "order_id" | "suggested_quantity" | "requested_quantity" | "stock_at_creation" | "stock_target_at_creation" | "weekly_demand_at_creation" | "approved_quantity" | "prepared_quantity" | "dispatched_quantity" | "received_quantity"> & { id: number; order_id: number; suggested_quantity: number | null; requested_quantity: number; stock_at_creation: number; stock_target_at_creation: number | null; weekly_demand_at_creation: number | null; approved_quantity: number | null; prepared_quantity: number | null; dispatched_quantity: number | null; received_quantity: number | null };
+export type OrderItem = Omit<ItemRow, "id" | "order_id" | "suggested_quantity" | "requested_quantity" | "stock_at_creation" | "stock_target_at_creation" | "weekly_demand_at_creation" | "approved_quantity" | "prepared_quantity" | "dispatched_quantity" | "received_quantity" | "stock_depot"> & {
+  id: number;
+  order_id: number;
+  suggested_quantity: number | null;
+  requested_quantity: number;
+  stock_at_creation: number;
+  stock_target_at_creation: number | null;
+  weekly_demand_at_creation: number | null;
+  approved_quantity: number | null;
+  prepared_quantity: number | null;
+  dispatched_quantity: number | null;
+  received_quantity: number | null;
+  package_units?: number | null;
+  presentation?: string | null;
+  presentation_display?: string | null;
+  rubro?: string;
+  stock_depot?: number | null;
+};
 export type Order = Omit<OrderRow, "id" | "order_number" | "item_count" | "requested_units" | "approved_units" | "prepared_units" | "dispatched_units" | "received_units"> & { id: number; order_number: number; item_count: number; requested_units: number; approved_units: number; prepared_units: number; dispatched_units: number; received_units: number };
 export type OrderEvent = Omit<EventRow, "id" | "order_id"> & { id: number; order_id: number };
 
 const scopeWhere = "o.source_id = $1 AND o.branch_id = $2 AND ($3::integer IS NULL OR o.organization_id = $3)";
 const warehouseOrScopeWhere = `(${scopeWhere} OR (o.organization_id=1 AND o.order_type='INTERNAL_REPLENISHMENT' AND o.destination_branch_id=1))`;
 const scopeValues = (scope: Scope): [string, number, number | null] => [scope.sourceId, scope.branchId, scope.organizationId ?? null];
-const numberOrNull = (value: string | null) => value === null ? null : Number(value);
+const numberOrNull = (value: string | number | null) => value === null ? null : Number(value);
 const orderSelect = `SELECT o.*, COUNT(i.id) AS item_count, COALESCE(SUM(i.requested_quantity), 0) AS requested_units, COALESCE(SUM(i.approved_quantity), 0) AS approved_units, COALESCE(SUM(i.prepared_quantity), 0) AS prepared_units, COALESCE(SUM(i.dispatched_quantity), 0) AS dispatched_units, COALESCE(SUM(i.received_quantity), 0) AS received_units FROM orders o LEFT JOIN order_items i ON i.order_id=o.id`;
 
 function mapOrder(row: OrderRow): Order { return { ...row, id: Number(row.id), order_number: Number(row.order_number ?? row.id), item_count: Number(row.item_count), requested_units: Number(row.requested_units), approved_units: Number(row.approved_units), prepared_units: Number(row.prepared_units), dispatched_units: Number(row.dispatched_units), received_units: Number(row.received_units) }; }
-function mapItem(row: ItemRow): OrderItem { return { ...row, id: Number(row.id), order_id: Number(row.order_id), suggested_quantity: numberOrNull(row.suggested_quantity), requested_quantity: Number(row.requested_quantity), stock_at_creation: Number(row.stock_at_creation), stock_target_at_creation: numberOrNull(row.stock_target_at_creation), weekly_demand_at_creation: numberOrNull(row.weekly_demand_at_creation), approved_quantity: numberOrNull(row.approved_quantity), prepared_quantity: numberOrNull(row.prepared_quantity), dispatched_quantity: numberOrNull(row.dispatched_quantity), received_quantity: numberOrNull(row.received_quantity) }; }
+function mapItem(row: ItemRow): OrderItem {
+  const bulto = row.package_units_snapshot ?? row.bulto_catalog;
+  const pres = resolveProductPresentation({
+    bulto,
+    unitMeasure: row.unit_measure_snapshot,
+  });
+  const rubro = resolveRubroName(row.classification_code_snapshot);
+
+  return {
+    ...row,
+    id: Number(row.id),
+    order_id: Number(row.order_id),
+    suggested_quantity: numberOrNull(row.suggested_quantity),
+    requested_quantity: Number(row.requested_quantity),
+    stock_at_creation: Number(row.stock_at_creation),
+    stock_target_at_creation: numberOrNull(row.stock_target_at_creation),
+    weekly_demand_at_creation: numberOrNull(row.weekly_demand_at_creation),
+    approved_quantity: numberOrNull(row.approved_quantity),
+    prepared_quantity: numberOrNull(row.prepared_quantity),
+    dispatched_quantity: numberOrNull(row.dispatched_quantity),
+    received_quantity: numberOrNull(row.received_quantity),
+    package_units: pres.packageUnits,
+    presentation: pres.presentation,
+    presentation_display: pres.displayText,
+    rubro,
+    stock_depot: numberOrNull(row.stock_depot ?? null),
+  };
+}
 function mapEvent(row: EventRow): OrderEvent { return { ...row, id: Number(row.id), order_id: Number(row.order_id) }; }
 
 async function addEvent(client: PoolClient, orderId: number, eventType: OrderEventType, metadata: Record<string, unknown> = {}, actorId?: string) {
@@ -169,10 +215,19 @@ export async function getOrder(scope: Scope, orderId: number) {
   if (!orderResult.rows[0]) throw new RequestValidationError("Order not found in the configured scope.");
   const actualOrderId = Number(orderResult.rows[0].id);
   const [items, events] = await Promise.all([
-    query<ItemRow>("SELECT * FROM order_items WHERE order_id=$1 ORDER BY id", [actualOrderId]),
+    query<ItemRow>(
+      `SELECT oi.*,
+         (SELECT SUM(sl.saldo) FROM stock_levels_raw sl WHERE sl.organization_id = 1 AND sl.branch_id = 1 AND sl.article_id = oi.article_id) AS stock_depot,
+         (SELECT p.payload->>'Bulto' FROM products_raw p WHERE p.article_id = oi.article_id AND p.is_present LIMIT 1) AS bulto_catalog
+       FROM order_items oi
+       WHERE oi.order_id = $1`,
+      [actualOrderId],
+    ),
     query<EventRow>("SELECT e.*, u.name AS actor_name, u.email AS actor_email FROM order_events e LEFT JOIN users u ON u.id::text=e.user_id WHERE e.order_id=$1 ORDER BY e.created_at, e.id", [actualOrderId]),
   ]);
-  return { ...mapOrder(orderResult.rows[0]), items: items.rows.map(mapItem), events: events.rows.map(mapEvent) };
+  const mappedItems = items.rows.map(mapItem);
+  mappedItems.sort(compareByRubroAndProduct);
+  return { ...mapOrder(orderResult.rows[0]), items: mappedItems, events: events.rows.map(mapEvent) };
 }
 
 export async function createOrder(scope: Scope, articleIds: number[], notes = "", actorId?: string) {

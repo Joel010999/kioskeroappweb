@@ -123,7 +123,7 @@ export async function confirmInternalReplenishment(input: {
     );
     for (const item of depotItems) {
       await client.query(
-        `INSERT INTO order_items (order_id,article_id,product_name_snapshot,suggested_quantity,requested_quantity,stock_at_creation,stock_target_at_creation,confidence_at_creation,status_at_creation,weekly_demand_at_creation,planning_date_at_creation,supplier_code_snapshot,classification_code_snapshot,unit_measure_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,'SEMANAL',$8,$9,$10,$11,$12,$13)`,
+        `INSERT INTO order_items (order_id,article_id,product_name_snapshot,suggested_quantity,requested_quantity,stock_at_creation,stock_target_at_creation,confidence_at_creation,status_at_creation,weekly_demand_at_creation,planning_date_at_creation,supplier_code_snapshot,classification_code_snapshot,unit_measure_snapshot,package_units_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,'SEMANAL',$8,$9,$10,$11,$12,$13,$14)`,
         [
           orderId,
           item.article_id,
@@ -138,6 +138,7 @@ export async function confirmInternalReplenishment(input: {
           item.supplier_code,
           item.classification_code,
           item.unit_measure,
+          item.package_units ?? null,
         ],
       );
     }

@@ -4,9 +4,12 @@ import {
   depotStockState,
   type DepotStockState,
   type WeeklyReplenishmentStatus,
+  REPLENISHMENT_COVERAGE_DAYS,
+  DAYS_IN_WEEK,
 } from "./weekly-replenishment-rules";
 import type { SupplyMode } from "@/server/supply/branch-supply-rules";
 import { SQL_RUBRO_EXPRESSION } from "@/server/catalog/rubros";
+import { resolveProductPresentation } from "@/server/catalog/presentations";
 
 export const WEEKLY_REPLENISHMENT_WEEKS = 6;
 
@@ -19,6 +22,9 @@ export type WeeklyReplenishmentItem = {
   classification_code: string | null;
   rubro?: string | null;
   unit_measure: string | null;
+  package_units?: number | null;
+  presentation?: string | null;
+  presentation_display?: string | null;
   stock_current: number;
   stock_depot: number | null;
   depot_stock_state: DepotStockState;
@@ -91,12 +97,13 @@ const filterConditions: Record<WeeklyReplenishmentFilter, string> = {
   TO_REPLENISH: "status = 'SUGGESTION_AVAILABLE' AND supply_mode IN ('DEPOT', 'UNDEFINED')",
 };
 const orderBy: Record<WeeklyReplenishmentSort, string> = {
-  SUGGESTED_DESC: "suggested_quantity DESC NULLS LAST",
-  DEMAND_DESC: "weekly_demand DESC NULLS LAST",
-  STOCK_ASC: "stock_current ASC",
+  SUGGESTED_DESC: "suggested_quantity DESC NULLS LAST, description ASC",
+  DEMAND_DESC: "weekly_demand DESC NULLS LAST, description ASC",
+  STOCK_ASC: "stock_current ASC, description ASC",
   DEPOT_GAP_DESC:
-    "(suggested_quantity - COALESCE(depot_stock, 0)) DESC NULLS LAST",
-  RUBRO_ASC: "rubro ASC NULLS LAST, description ASC",
+    "(suggested_quantity - COALESCE(depot_stock, 0)) DESC NULLS LAST, description ASC",
+  RUBRO_ASC:
+    "CASE WHEN rubro IS NULL OR btrim(rubro) = '' OR UPPER(btrim(rubro)) IN ('SIN RUBRO', '__SIN_RUBRO__') THEN 1 ELSE 0 END ASC, LOWER(rubro) ASC, LOWER(description) ASC, article_id ASC",
 };
 
 export async function getWeeklyReplenishment(options: {
@@ -108,6 +115,7 @@ export async function getWeeklyReplenishment(options: {
   filter?: WeeklyReplenishmentFilter;
   sort?: WeeklyReplenishmentSort;
   rubro?: string;
+  supplier?: string;
   limit: number;
   offset: number;
 }) {
@@ -140,6 +148,18 @@ export async function getWeeklyReplenishment(options: {
     rubroClause = `AND rubro = $${values.length}`;
   }
 
+  let supplierClause = "";
+  if (
+    options.supplier === "__SIN_PROVEEDOR__" ||
+    options.supplier === "SIN_PROVEEDOR" ||
+    options.supplier === "SIN PROVEEDOR"
+  ) {
+    supplierClause = "AND (supplier_code IS NULL OR supplier_code = '' OR supplier_code = 'SIN PROVEEDOR')";
+  } else if (options.supplier) {
+    values.push(options.supplier);
+    supplierClause = `AND supplier_code = $${values.length}`;
+  }
+
   const result = await query<{
     article_id: number;
     description: string | null;
@@ -147,6 +167,7 @@ export async function getWeeklyReplenishment(options: {
     classification_code: string | null;
     rubro: string | null;
     unit_measure: string | null;
+    bulto_raw: string | null;
     stock_current: string;
     depot_stock: string | null;
     weekly_demand: string;
@@ -206,6 +227,7 @@ export async function getWeeklyReplenishment(options: {
         p.payload->>'Clasificacion' AS classification_code,
         ${SQL_RUBRO_EXPRESSION} AS rubro,
         p.payload->>'UnidadMedida' AS unit_measure,
+        p.payload->>'Bulto' AS bulto_raw,
         COALESCE(sp.current_stock, 0) AS stock_current, sd.depot_stock, m.weekly_demand, m.weekly_average, m.weekly_max, m.weekly_min, m.active_weeks,
         COALESCE(sr.supply_mode, 'UNDEFINED') AS supply_mode,
         CASE WHEN UPPER(p.payload->>'UnidadMedida') IN ('KG', 'KILO', 'KILOS', 'L', 'LITRO', 'LITROS') THEN false ELSE true END AS is_discrete
@@ -213,31 +235,35 @@ export async function getWeeklyReplenishment(options: {
       LEFT JOIN stock_pv sp ON sp.article_id = m.article_id LEFT JOIN stock_depot sd ON sd.article_id = m.article_id
       LEFT JOIN branch_product_supply_rules sr ON sr.organization_id = $2 AND sr.branch_id = $4 AND sr.article_id = m.article_id
       WHERE p.is_present
+    ), target_calc AS (
+      SELECT *,
+        (weekly_demand * ${REPLENISHMENT_COVERAGE_DAYS}::numeric / ${DAYS_IN_WEEK}::numeric) AS demand_10d
+      FROM items_base
     ), items AS (
-      SELECT article_id, description, supplier_code, classification_code, rubro, unit_measure,
-        stock_current, depot_stock, 
-        CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END AS weekly_demand, 
+      SELECT article_id, description, supplier_code, classification_code, rubro, unit_measure, bulto_raw,
+        stock_current, depot_stock, weekly_demand,
+        CASE WHEN is_discrete THEN CEIL(demand_10d) ELSE demand_10d END AS target_stock_calc,
         weekly_average, weekly_max, weekly_min, active_weeks, supply_mode, is_discrete,
         CASE WHEN stock_current < 0 THEN 'NEGATIVE_STOCK'
           WHEN active_weeks = 0 THEN 'NO_DEMAND'
           WHEN active_weeks < 3 THEN 'INSUFFICIENT_HISTORY'
           WHEN weekly_max - (CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) >= 20 AND ((CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) = 0 OR weekly_max >= (CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) * 3) THEN 'IRREGULAR_DEMAND'
-          WHEN GREATEST(0, (CASE WHEN is_discrete THEN CEIL(weekly_demand) ELSE weekly_demand END) - stock_current) > 0 THEN 'SUGGESTION_AVAILABLE' ELSE 'NO_SUGGESTION' END AS status
-      FROM items_base
+          WHEN GREATEST(0, (CASE WHEN is_discrete THEN CEIL(demand_10d) ELSE demand_10d END) - stock_current) > 0 THEN 'SUGGESTION_AVAILABLE' ELSE 'NO_SUGGESTION' END AS status
+      FROM target_calc
     )
     SELECT *, COUNT(*) OVER() AS total_rows FROM (
-      SELECT article_id, description, supplier_code, classification_code, rubro, unit_measure,
+      SELECT article_id, description, supplier_code, classification_code, rubro, unit_measure, bulto_raw,
         stock_current, depot_stock, weekly_demand, weekly_average, weekly_max, weekly_min,
         active_weeks, supply_mode, status,
         CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
-        ELSE weekly_demand END AS target_stock,
+        ELSE target_stock_calc END AS target_stock,
         CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
-        WHEN is_discrete THEN CEIL(GREATEST(0, weekly_demand - stock_current))
-        ELSE GREATEST(0, weekly_demand - stock_current) END AS suggested_quantity
+        WHEN is_discrete THEN CEIL(GREATEST(0, target_stock_calc - stock_current))
+        ELSE GREATEST(0, target_stock_calc - stock_current) END AS suggested_quantity
       FROM items
     ) decisions
     WHERE ($6::text IS NULL OR description ILIKE $6 OR article_id::text ILIKE $6 OR supplier_code ILIKE $6 OR classification_code ILIKE $6 OR rubro ILIKE $6)
-      AND ($7::text IS NULL OR status = $7) ${filterClause} ${rubroClause}
+      AND ($7::text IS NULL OR status = $7) ${filterClause} ${rubroClause} ${supplierClause}
     ORDER BY ${sortClause}, article_id ASC
     LIMIT $8 OFFSET $9
   `,
@@ -258,6 +284,21 @@ export async function getWeeklyReplenishment(options: {
     // Graceful fallback if distinct query fails in isolated test fixtures
   }
 
+  let suppliers: string[] = [];
+  try {
+    const suppliersResult = await query<{ supplier: string }>(
+      `SELECT DISTINCT btrim(p.payload->>'Proveedor') AS supplier
+       FROM products_raw p
+       WHERE p.organization_id = $1 AND p.source_id = $2 AND p.branch_id = $3 AND p.is_present
+         AND NULLIF(btrim(p.payload->>'Proveedor'), '') IS NOT NULL
+       ORDER BY supplier ASC`,
+      [options.scope.organizationId, options.scope.sourceId, options.scope.branchId]
+    );
+    suppliers = suppliersResult.rows.map((r) => r.supplier).filter(Boolean);
+  } catch {
+    // Graceful fallback if distinct query fails in isolated test fixtures
+  }
+
   const branchLabel =
     options.scope.branchId === 2
       ? "Centro"
@@ -274,13 +315,19 @@ export async function getWeeklyReplenishment(options: {
       label: branchLabel,
     },
     window_weeks: WEEKLY_REPLENISHMENT_WEEKS,
+    coverage_days: REPLENISHMENT_COVERAGE_DAYS,
     total: result.rows[0] ? Number(result.rows[0].total_rows) : 0,
     rubros,
+    suppliers,
     items: result.rows.map((row) => {
       const stockDepot = numberOrNull(row.depot_stock);
       const depotState = depotStockState(stockDepot);
       const activeWeeks = Number(row.active_weeks);
       const stockCurrent = Number(row.stock_current);
+      const presentation = resolveProductPresentation({
+        bulto: row.bulto_raw,
+        unitMeasure: row.unit_measure,
+      });
       const warnings = [
         ...(stockCurrent < 0 ? ["NEGATIVE_STOCK"] : []),
         ...(activeWeeks < 3 ? ["INSUFFICIENT_HISTORY"] : []),
@@ -294,6 +341,9 @@ export async function getWeeklyReplenishment(options: {
         classification_code: row.classification_code,
         rubro: row.rubro ?? null,
         unit_measure: row.unit_measure,
+        package_units: presentation.packageUnits,
+        presentation: presentation.presentation,
+        presentation_display: presentation.displayText,
         stock_current: stockCurrent,
         stock_depot: stockDepot,
         depot_stock_state: depotState,

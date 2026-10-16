@@ -1,4 +1,5 @@
 import * as xlsx from "xlsx";
+import { compareRubros } from "@/server/catalog/rubros";
 
 export type DepotStockRow = {
   articleId: number;
@@ -40,6 +41,7 @@ export type OrderExportRow = {
   stockPv: number;
   requestedQty: number;
   category: string; // Para generar las filas agrupadoras "RUBRO"
+  presentation?: string;
 };
 
 export function generatePedidoExcel(items: OrderExportRow[]): Buffer {
@@ -53,8 +55,15 @@ export function generatePedidoExcel(items: OrderExportRow[]): Buffer {
     acc[cat].push(item);
     return acc;
   }, {} as Record<string, OrderExportRow[]>);
+
+  // Ordenar categorías de A a Z ("SIN CATEGORIA" al final)
+  const sortedCategories = Object.keys(byCategory).sort(compareRubros);
   
-  for (const [category, catItems] of Object.entries(byCategory)) {
+  for (const category of sortedCategories) {
+    const catItems = byCategory[category];
+    // Ordenar productos alfabéticamente dentro de cada rubro
+    catItems.sort((a, b) => a.description.localeCompare(b.description, "es", { sensitivity: "base" }));
+
     // Fila separadora de Rubro
     wsData.push([category, null, null, null, null]);
     
@@ -77,3 +86,4 @@ export function generatePedidoExcel(items: OrderExportRow[]): Buffer {
   
   return xlsx.write(wb, { type: "buffer", bookType: "xlsx" });
 }
+

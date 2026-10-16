@@ -33,16 +33,37 @@ export function depotStockState(stock: number | null): DepotStockState {
   return "DEPOT_STOCK_POSITIVE";
 }
 
+export const REPLENISHMENT_COVERAGE_DAYS = 10;
+export const DAYS_IN_WEEK = 7;
+
+export function calculateTargetStock(
+  weeklyDemand: number,
+  coverageDays: number = REPLENISHMENT_COVERAGE_DAYS,
+): number {
+  return (weeklyDemand * coverageDays) / DAYS_IN_WEEK;
+}
+
 export function isIrregularWeeklyDemand(medianDemand: number, maxDemand: number): boolean {
   return maxDemand - medianDemand >= 20 && (medianDemand === 0 ? maxDemand >= 20 : maxDemand >= medianDemand * 3);
 }
 
-export function weeklyDecision(input: { currentStock: number; activeWeeks: number; medianDemand: number; maxDemand: number }) {
+export function weeklyDecision(input: {
+  currentStock: number;
+  activeWeeks: number;
+  medianDemand: number;
+  maxDemand: number;
+  coverageDays?: number;
+  isDiscrete?: boolean;
+}) {
+  const coverageDays = input.coverageDays ?? REPLENISHMENT_COVERAGE_DAYS;
+  const targetStock = calculateTargetStock(input.medianDemand, coverageDays);
+
   if (input.currentStock < 0) return { status: "NEGATIVE_STOCK" as const, targetStock: null, suggestedQuantity: null };
   if (input.activeWeeks === 0) return { status: "NO_DEMAND" as const, targetStock: 0, suggestedQuantity: 0 };
   if (input.activeWeeks < 3) return { status: "INSUFFICIENT_HISTORY" as const, targetStock: null, suggestedQuantity: null };
-  if (isIrregularWeeklyDemand(input.medianDemand, input.maxDemand)) return { status: "IRREGULAR_DEMAND" as const, targetStock: input.medianDemand, suggestedQuantity: null };
+  if (isIrregularWeeklyDemand(input.medianDemand, input.maxDemand)) return { status: "IRREGULAR_DEMAND" as const, targetStock, suggestedQuantity: null };
 
-  const suggestedQuantity = Math.max(0, input.medianDemand - input.currentStock);
-  return { status: suggestedQuantity > 0 ? "SUGGESTION_AVAILABLE" as const : "NO_SUGGESTION" as const, targetStock: input.medianDemand, suggestedQuantity };
+  const rawSuggested = Math.max(0, targetStock - input.currentStock);
+  const suggestedQuantity = input.isDiscrete ? Math.ceil(rawSuggested) : rawSuggested;
+  return { status: suggestedQuantity > 0 ? "SUGGESTION_AVAILABLE" as const : "NO_SUGGESTION" as const, targetStock, suggestedQuantity };
 }

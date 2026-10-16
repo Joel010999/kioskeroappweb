@@ -27,6 +27,12 @@ type Item = {
   dispatched_quantity: number | null;
   received_quantity: number | null;
   unit_measure_snapshot?: string | null;
+  rubro?: string | null;
+  package_units?: number | null;
+  presentation?: string | null;
+  presentation_display?: string | null;
+  stock_depot?: number | null;
+  supplier_code?: string | null;
 };
 type Event = {
   id: number;
@@ -771,7 +777,9 @@ export function OrderDetailClient({
               <thead>
                 <tr>
                   <th>Producto</th>
-                  <th>Articulo</th>
+                  <th>Presentación</th>
+                  <th>Rubro</th>
+                  <th>Stock Depósito Central</th>
                   <th>Solicitado</th>
                   <th>Aprobado</th>
                   <th>Preparado</th>
@@ -780,16 +788,38 @@ export function OrderDetailClient({
                 </tr>
               </thead>
               <tbody>
-                {order.items?.map((item) => (
+                {order.items?.map((item) => {
+                  const isBulto = Boolean(item.package_units && item.package_units > 1);
+                  return (
                   <tr key={item.id}>
                     <td data-label="Producto">
                       <strong>{item.product_name_snapshot}</strong>
                       <small>
-                        {item.classification_code_snapshot ? `${item.classification_code_snapshot} · ` : ""}
-                        {item.unit_measure_snapshot ?? "Sin unidad registrada"}
+                        #{item.article_id}
+                        {item.supplier_code ? ` · Prov. ${item.supplier_code}` : ""}
+                        {item.unit_measure_snapshot ? ` · ${item.unit_measure_snapshot}` : ""}
                       </small>
+                      <div style={{ marginTop: "4px" }}>
+                        <span className={`presentation-badge ${isBulto ? "bulto" : "unidad"}`}>
+                          📦 {item.presentation_display || "Unidad"}
+                        </span>
+                      </div>
                     </td>
-                    <td data-label="Articulo">#{item.article_id}</td>
+                    <td data-label="Presentación">
+                      <span className={`presentation-badge ${isBulto ? "bulto" : "unidad"}`}>
+                        {item.presentation_display || "Unidad"}
+                      </span>
+                    </td>
+                    <td data-label="Rubro">
+                      <span className="rubro-tag">
+                        {item.rubro || "Sin rubro"}
+                      </span>
+                    </td>
+                    <td data-label="Stock Depósito Central">
+                      {item.stock_depot !== null && item.stock_depot !== undefined
+                        ? `${fmt.format(item.stock_depot)} u.`
+                        : "-"}
+                    </td>
                     <td data-label="Solicitado" className="suggested-value">
                       {fmt.format(item.requested_quantity)}
                     </td>
@@ -880,7 +910,8 @@ export function OrderDetailClient({
                       ) : null}
                     </td>
                   </tr>
-                ))}
+                );
+              })}
               </tbody>
             </table>
           </div>

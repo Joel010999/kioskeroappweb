@@ -57,6 +57,9 @@ type Item = {
   classification_code: string | null;
   rubro?: string | null;
   unit_measure: string | null;
+  package_units?: number | null;
+  presentation?: string | null;
+  presentation_display?: string | null;
   stock_current: number;
   stock_depot: number | null;
   depot_stock_state: DepotState;
@@ -72,8 +75,10 @@ type Response = {
   planning_date: string;
   location: { branch_id: number; label: string };
   window_weeks: number;
+  coverage_days?: number;
   total: number;
   rubros?: string[];
+  suppliers?: Array<{ code: string; name: string }>;
   items: Item[];
   page: number;
   page_size: number;
@@ -144,6 +149,13 @@ function requestedKey(
   return `${branchId}:${planningDate}:${articleId}`;
 }
 
+function makeIdempotencyToken(branchId: string, planningDate: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `kioskero-${branchId}-${planningDate}-${Date.now()}`;
+}
+
 const draftStorageKey = (branchId: string, planningDate: string) =>
   `kioskero_draft_v1_${branchId}_${planningDate}`;
 
@@ -187,15 +199,18 @@ export function ReplenishmentReviewClient({
   const [planningDate, setPlanningDate] = useState(nextSaturday);
   const [filter, setFilter] = useState<Filter>("TO_REPLENISH");
   const [rubro, setRubro] = useState<string>("");
-  const [sort, setSort] = useState<Sort>("SUGGESTED_DESC");
+  const [supplier, setSupplier] = useState<string>("");
+  const [sort, setSort] = useState<Sort>("RUBRO_ASC");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<Response | null>(null);
   const [allRubros, setAllRubros] = useState<string[]>([]);
+  const [allSuppliers, setAllSuppliers] = useState<Array<{ code: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [authError, setAuthError] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
 
   const [requested, setRequested] = useState<Record<string, number>>(() => {
@@ -332,6 +347,7 @@ export function ReplenishmentReviewClient({
       if (filter) params.set("filter", filter);
       if (search) params.set("search", search);
       if (rubro) params.set("rubro", rubro);
+      if (supplier) params.set("supplier", supplier);
 
       try {
         setLoading(true);
@@ -374,6 +390,9 @@ export function ReplenishmentReviewClient({
         if (result.rubros && Array.isArray(result.rubros)) {
           setAllRubros(result.rubros);
         }
+        if (result.suppliers && Array.isArray(result.suppliers)) {
+          setAllSuppliers(result.suppliers);
+        }
         setAuthError(false);
         setError(null);
 
@@ -395,6 +414,9 @@ export function ReplenishmentReviewClient({
               supply_mode: item.supply_mode,
               supplier_code: item.supplier_code,
               unit_measure: item.unit_measure,
+              package_units: item.package_units,
+              presentation: item.presentation,
+              presentation_display: item.presentation_display,
             };
           }
           return next;
@@ -462,6 +484,7 @@ export function ReplenishmentReviewClient({
     sort,
     search,
     rubro,
+    supplier,
     page,
     reloadCounter,
   ]);
@@ -546,6 +569,9 @@ export function ReplenishmentReviewClient({
           supply_mode: item.supply_mode,
           supplier_code: item.supplier_code,
           unit_measure: item.unit_measure,
+          package_units: item.package_units,
+          presentation: item.presentation,
+          presentation_display: item.presentation_display,
         }),
         requested_quantity: value,
       },
@@ -591,24 +617,33 @@ export function ReplenishmentReviewClient({
           supply_mode: item.supply_mode,
           supplier_code: item.supplier_code,
           unit_measure: item.unit_measure,
+          package_units: item.package_units,
+          presentation: item.presentation,
+          presentation_display: item.presentation_display,
         }),
         requested_quantity: sug,
       },
     }));
   };
 
-  const confirm = async () => {
+  const openConfirmModal = () => {
     if (!data) return;
     const items = globalSelections.filter(
       (item) => item.requested_quantity > 0,
     );
-    if (
-      !items.length ||
-      !window.confirm(
-        `Confirmar solicitud de ${items.length} productos para ${data.location.label}?`,
-      )
-    )
+    if (!items.length) {
+      alert("No hay productos seleccionados con cantidad mayor a 0 para solicitar.");
       return;
+    }
+    setShowConfirmModal(true);
+  };
+
+  const executeConfirm = async () => {
+    if (!data) return;
+    const items = globalSelections.filter(
+      (item) => item.requested_quantity > 0,
+    );
+    if (!items.length) return;
     setConfirming(true);
     try {
       const response = await fetch("/api/replenishment/weekly/confirm", {
@@ -618,10 +653,7 @@ export function ReplenishmentReviewClient({
           branch_id: Number(branchId),
           planning_date: planningDate,
           items,
-          idempotency_token:
-            typeof crypto !== "undefined" && crypto.randomUUID
-              ? crypto.randomUUID()
-              : `kioskero-${branchId}-${planningDate}-${Date.now()}`,
+          idempotency_token: makeIdempotencyToken(branchId, planningDate),
         }),
       });
       const result = await response.json();
@@ -636,6 +668,7 @@ export function ReplenishmentReviewClient({
         localStorage.removeItem(draftStorageKey(branchId, planningDate));
       } catch {}
       setDraftRestored(false);
+      setShowConfirmModal(false);
       setError(null);
       setAuthError(false);
     } catch (cause) {
@@ -662,6 +695,9 @@ export function ReplenishmentReviewClient({
             supply_mode: sel.supply_mode,
             supplier_code: meta?.supplier_code ?? null,
             unit_measure: meta?.unit_measure ?? "UN",
+            package_units: meta?.package_units ?? null,
+            presentation: meta?.presentation,
+            presentation_display: meta?.presentation_display,
           };
         })
         .filter((item) => item.requested_quantity > 0);
@@ -691,6 +727,9 @@ export function ReplenishmentReviewClient({
         supply_mode: item.supply_mode,
         supplier_code: item.supplier_code,
         unit_measure: item.unit_measure,
+        package_units: item.package_units,
+        presentation: item.presentation,
+        presentation_display: item.presentation_display,
       }));
 
       downloadReplenishmentExcel({
@@ -774,16 +813,31 @@ export function ReplenishmentReviewClient({
           </select>
         </label>
         <label>
+          <span>Proveedor</span>
+          <select
+            value={supplier}
+            onChange={(event) => resetPage(setSupplier, event.target.value)}
+            aria-label="Filtrar por proveedor"
+          >
+            <option value="">Todos los proveedores</option>
+            {allSuppliers.map((s) => (
+              <option key={s.code} value={s.code}>
+                {s.name ? `${s.name} (${s.code})` : `Proveedor ${s.code}`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           <span>Ordenar</span>
           <select
             value={sort}
             onChange={(event) => resetPage(setSort, event.target.value as Sort)}
           >
+            <option value="RUBRO_ASC">Rubro (A - Z)</option>
             <option value="SUGGESTED_DESC">Mayor sugerida</option>
             <option value="DEMAND_DESC">Mayor demanda</option>
             <option value="STOCK_ASC">Menor stock PV</option>
             <option value="DEPOT_GAP_DESC">Mayor diferencia depósito</option>
-            <option value="RUBRO_ASC">Rubro (A - Z)</option>
           </select>
         </label>
       </section>
@@ -823,7 +877,8 @@ export function ReplenishmentReviewClient({
           <span>
             {units.format(data.total)} productos relevantes en{" "}
             {data.location.label}
-            {rubro ? ` (Rubro: ${rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro})` : ""}
+            {rubro ? ` · Rubro: ${rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro}` : ""}
+            {supplier ? ` · Proveedor: ${allSuppliers.find((s) => s.code === supplier)?.name || supplier}` : ""}
           </span>
         )}
 
@@ -855,13 +910,13 @@ export function ReplenishmentReviewClient({
               confirmedOrder !== null ||
               currentExistingOrder !== null
             }
-            onClick={() => void confirm()}
+            onClick={openConfirmModal}
           >
             {confirmedOrder
               ? `Solicitud #${confirmedOrder} confirmada`
               : confirming
                 ? "Confirmando..."
-                : "Confirmar reposición"}
+                : "Revisar y confirmar pedido"}
           </button>
         </div>
       </section>
@@ -998,15 +1053,16 @@ export function ReplenishmentReviewClient({
                 <tr>
                   <th>Incluir</th>
                   <th>Producto</th>
+                  <th>Presentación</th>
                   <th>Rubro</th>
                   <th>Abastecimiento</th>
                   <th>Clasificación</th>
                   <th>Stock PV</th>
                   <th>Demanda semanal</th>
-                  <th>Objetivo</th>
+                  <th>Objetivo (10d)</th>
                   <th>Sugerida</th>
                   <th>Solicitada</th>
-                  <th>Stock depósito</th>
+                  <th>Stock depósito central</th>
                   <th>Estado depósito</th>
                   <th>Estado</th>
                 </tr>
@@ -1024,6 +1080,7 @@ export function ReplenishmentReviewClient({
                     item.suggested_quantity !== null &&
                     item.stock_depot !== null &&
                     item.suggested_quantity > item.stock_depot;
+                  const isBulto = Boolean(item.package_units && item.package_units > 1);
                   return (
                     <tr key={item.article_id}>
                       <td data-label="Incluir">
@@ -1044,6 +1101,24 @@ export function ReplenishmentReviewClient({
                           #{item.article_id} · Prov. {item.supplier_code || "-"}{" "}
                           · {item.unit_measure || "sin unidad"}
                         </small>
+                        <div style={{ marginTop: "4px" }}>
+                          <span
+                            className={`presentation-badge ${
+                              isBulto ? "bulto" : "unidad"
+                            }`}
+                          >
+                            📦 {item.presentation_display || "Unidad"}
+                          </span>
+                        </div>
+                      </td>
+                      <td data-label="Presentación">
+                        <span
+                          className={`presentation-badge ${
+                            isBulto ? "bulto" : "unidad"
+                          }`}
+                        >
+                          {item.presentation_display || "Unidad"}
+                        </span>
                       </td>
                       <td data-label="Rubro">
                         <span className="rubro-tag">
@@ -1073,7 +1148,7 @@ export function ReplenishmentReviewClient({
                           ? "-"
                           : units.format(item.weekly_demand)}
                       </td>
-                      <td data-label="Objetivo">
+                      <td data-label="Objetivo (10d)">
                         {item.target_stock === null
                           ? "-"
                           : units.format(item.target_stock)}
@@ -1112,7 +1187,7 @@ export function ReplenishmentReviewClient({
                         </div>
                       </td>
                       <td
-                        data-label="Stock depósito"
+                        data-label="Stock depósito central"
                         className={
                           item.stock_depot !== null && item.stock_depot < 0
                             ? "negative-number"
@@ -1121,10 +1196,10 @@ export function ReplenishmentReviewClient({
                       >
                         {item.stock_depot === null
                           ? "-"
-                          : units.format(item.stock_depot)}
+                          : `${units.format(item.stock_depot)} u.`}
                         {depotShort && (
                           <small className="depot-warning">
-                            Stock depósito menor a la sugerencia
+                            Stock depósito central menor a sugerencia
                           </small>
                         )}
                       </td>
@@ -1220,6 +1295,155 @@ export function ReplenishmentReviewClient({
                 onClick={() => setShowExportModal(false)}
               >
                 Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Pre-Confirmation Review Modal */}
+      {showConfirmModal && (
+        <div
+          className="export-modal-backdrop"
+          onClick={() => !confirming && setShowConfirmModal(false)}
+        >
+          <div
+            className="confirm-review-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-modal-title"
+          >
+            <div className="confirm-modal-header">
+              <h2 id="confirm-modal-title">
+                📋 Revisar pedido antes de confirmar
+              </h2>
+              <p>
+                {branchName} · Planificación {planningDate}
+              </p>
+            </div>
+
+            <div className="confirm-modal-summary-pills">
+              <div className="confirm-pill">
+                <span>Productos a solicitar</span>
+                <strong>
+                  {
+                    globalSelections.filter((s) => s.requested_quantity > 0)
+                      .length
+                  }
+                </strong>
+              </div>
+              <div className="confirm-pill">
+                <span>Unidades totales</span>
+                <strong>
+                  {units.format(
+                    globalSelections.reduce(
+                      (sum, item) => sum + item.requested_quantity,
+                      0,
+                    ),
+                  )}{" "}
+                  u.
+                </strong>
+              </div>
+              <div className="confirm-pill-info">
+                <span>ℹ️ Unidades y bultos</span>
+                <p>
+                  Las cantidades se registran en <strong>unidades individuales</strong>. A continuación podés verificar la presentación comercial de cada artículo (Bulto o Unidad) y el stock disponible en el depósito central.
+                </p>
+              </div>
+            </div>
+
+            <div className="confirm-modal-table-wrap">
+              <table className="confirm-modal-table">
+                <thead>
+                  <tr>
+                    <th>Producto</th>
+                    <th>Rubro</th>
+                    <th>Presentación</th>
+                    <th>Stock Depósito Central</th>
+                    <th>Cantidad solicitada</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {globalSelections
+                    .filter((sel) => sel.requested_quantity > 0)
+                    .map((sel) => {
+                      const meta = itemRegistry[sel.article_id];
+                      const isBulto = Boolean(
+                        meta?.package_units && meta.package_units > 1,
+                      );
+                      const isShort =
+                        meta?.stock_depot !== null &&
+                        meta?.stock_depot !== undefined &&
+                        sel.requested_quantity > meta.stock_depot;
+                      return (
+                        <tr key={sel.article_id}>
+                          <td>
+                            <strong>
+                              {meta?.description || `Artículo #${sel.article_id}`}
+                            </strong>
+                            <small>
+                              #{sel.article_id}
+                              {meta?.supplier_code
+                                ? ` · Prov. ${meta.supplier_code}`
+                                : ""}
+                            </small>
+                          </td>
+                          <td>
+                            <span className="rubro-tag">
+                              {meta?.rubro || "Sin rubro"}
+                            </span>
+                          </td>
+                          <td>
+                            <span
+                              className={`presentation-badge ${
+                                isBulto ? "bulto" : "unidad"
+                              }`}
+                            >
+                              📦 {meta?.presentation_display || "Unidad"}
+                            </span>
+                          </td>
+                          <td className={isShort ? "negative-number" : ""}>
+                            {meta?.stock_depot !== null &&
+                            meta?.stock_depot !== undefined
+                              ? `${units.format(meta.stock_depot)} u.`
+                              : "-"}
+                            {isShort && (
+                              <small className="depot-warning">
+                                Solicitada &gt; Depósito
+                              </small>
+                            )}
+                          </td>
+                          <td className="confirm-qty-cell">
+                            <strong>
+                              {units.format(sel.requested_quantity)}
+                            </strong>{" "}
+                            u.
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="confirm-modal-footer">
+              <button
+                type="button"
+                className="order-secondary"
+                disabled={confirming}
+                onClick={() => setShowConfirmModal(false)}
+              >
+                ← Volver a modificar cantidades
+              </button>
+              <button
+                type="button"
+                className="order-primary"
+                disabled={confirming}
+                onClick={() => void executeConfirm()}
+              >
+                {confirming
+                  ? "Confirmando solicitud..."
+                  : "✓ Confirmar y enviar pedido definitivo"}
               </button>
             </div>
           </div>
