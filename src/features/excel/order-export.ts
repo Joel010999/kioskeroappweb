@@ -80,13 +80,10 @@ export function buildReplenishmentWorkbook(params: {
     "Rubro",
     "Proveedor",
     "Presentación",
-    "Bulto (Equiv.)",
     "Stock Sucursal",
     "Stock Depósito Central",
     "Sugerida",
     "Solicitada",
-    "Abastecimiento",
-    "Unidad",
   ]);
 
   let totalSugerida = 0;
@@ -110,26 +107,16 @@ export function buildReplenishmentWorkbook(params: {
             unitMeasure: item.unit_measure,
           });
 
-    const equivText =
-      pres.packageUnits && pres.packageUnits > 1 ? `${pres.packageUnits} u.` : "-";
-
     aoa.push([
       item.article_id,
       item.description || `Artículo ${item.article_id}`,
       resolveRubroName(item.classification_code, item.rubro),
       item.supplier_code || "-",
       pres.displayText,
-      equivText,
       item.stock_current,
       item.stock_depot !== null ? item.stock_depot : "-",
       sug,
       req,
-      item.supply_mode === "DEPOT"
-        ? "DEPÓSITO"
-        : item.supply_mode === "DIRECT_SUPPLIER"
-          ? "PROV. DIRECTO"
-          : "SIN DEFINIR",
-      item.unit_measure || "UN",
     ]);
   }
 
@@ -143,11 +130,8 @@ export function buildReplenishmentWorkbook(params: {
     null,
     null,
     null,
-    null,
     totalSugerida,
     totalSolicitada,
-    null,
-    null,
   ]);
 
   const ws = xlsx.utils.aoa_to_sheet(aoa);
@@ -157,13 +141,10 @@ export function buildReplenishmentWorkbook(params: {
     { wch: 22 }, // Rubro
     { wch: 14 }, // Proveedor
     { wch: 18 }, // Presentación
-    { wch: 14 }, // Bulto (Equiv.)
     { wch: 14 }, // Stock Sucursal
     { wch: 22 }, // Stock Depósito Central
     { wch: 12 }, // Sugerida
     { wch: 12 }, // Solicitada
-    { wch: 16 }, // Abastecimiento
-    { wch: 10 }, // Unidad
   ];
 
   const wb = xlsx.utils.book_new();

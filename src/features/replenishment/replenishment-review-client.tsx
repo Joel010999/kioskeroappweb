@@ -10,6 +10,7 @@ import {
   downloadReplenishmentExcel,
   type ReplenishmentExportItem,
 } from "@/features/excel/order-export";
+import { isSinRubro } from "@/server/catalog/rubros";
 
 type Status =
   | "SUGGESTION_AVAILABLE"
@@ -78,13 +79,35 @@ type Response = {
   coverage_days?: number;
   total: number;
   rubros?: string[];
-  suppliers?: Array<{ code: string; name: string }>;
+  suppliers?: Array<string | { code: string; name?: string }>;
   items: Item[];
   page: number;
   page_size: number;
 };
 
 const units = new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 });
+
+export function normalizeSupplierCodes(
+  suppliers?: Array<string | { code: string; name?: string }>,
+): string[] {
+  if (!suppliers || !Array.isArray(suppliers)) return [];
+  const set = new Set<string>();
+  for (const s of suppliers) {
+    const raw = typeof s === "string" ? s : (s?.code ?? "");
+    const code = raw.trim();
+    if (
+      code &&
+      code.toLowerCase() !== "undefined" &&
+      code.toLowerCase() !== "null" &&
+      code !== "__SIN_PROVEEDOR__"
+    ) {
+      set.add(code);
+    }
+  }
+  return Array.from(set).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true }),
+  );
+}
 const statusLabel: Record<Status, string> = {
   SUGGESTION_AVAILABLE: "Sugerencia disponible",
   NO_SUGGESTION: "Sin sugerencia",
@@ -205,7 +228,11 @@ export function ReplenishmentReviewClient({
   const [page, setPage] = useState(1);
   const [data, setData] = useState<Response | null>(null);
   const [allRubros, setAllRubros] = useState<string[]>([]);
-  const [allSuppliers, setAllSuppliers] = useState<Array<{ code: string; name: string }>>([]);
+  const [allSuppliers, setAllSuppliers] = useState<string[]>([]);
+  const displayedRubros = useMemo(
+    () => allRubros.filter((r) => !isSinRubro(r)),
+    [allRubros],
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [authError, setAuthError] = useState(false);
@@ -391,7 +418,7 @@ export function ReplenishmentReviewClient({
           setAllRubros(result.rubros);
         }
         if (result.suppliers && Array.isArray(result.suppliers)) {
-          setAllSuppliers(result.suppliers);
+          setAllSuppliers(normalizeSupplierCodes(result.suppliers));
         }
         setAuthError(false);
         setError(null);
@@ -804,7 +831,7 @@ export function ReplenishmentReviewClient({
             aria-label="Filtrar por rubro"
           >
             <option value="">Todos los rubros</option>
-            {allRubros.map((r) => (
+            {displayedRubros.map((r) => (
               <option key={r} value={r}>
                 {r}
               </option>
@@ -820,11 +847,12 @@ export function ReplenishmentReviewClient({
             aria-label="Filtrar por proveedor"
           >
             <option value="">Todos los proveedores</option>
-            {allSuppliers.map((s) => (
-              <option key={s.code} value={s.code}>
-                {s.name ? `${s.name} (${s.code})` : `Proveedor ${s.code}`}
+            {allSuppliers.map((code) => (
+              <option key={code} value={code}>
+                Proveedor {code}
               </option>
             ))}
+            <option value="__SIN_PROVEEDOR__">Sin proveedor</option>
           </select>
         </label>
         <label>
@@ -877,8 +905,14 @@ export function ReplenishmentReviewClient({
           <span>
             {units.format(data.total)} productos relevantes en{" "}
             {data.location.label}
-            {rubro ? ` · Rubro: ${rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro}` : ""}
-            {supplier ? ` · Proveedor: ${allSuppliers.find((s) => s.code === supplier)?.name || supplier}` : ""}
+            {rubro ? ` · Rubro: ${isSinRubro(rubro) ? "Sin rubro" : rubro}` : ""}
+            {supplier
+              ? ` · Proveedor: ${
+                  supplier === "__SIN_PROVEEDOR__"
+                    ? "Sin proveedor"
+                    : `Proveedor ${supplier}`
+                }`
+              : ""}
           </span>
         )}
 

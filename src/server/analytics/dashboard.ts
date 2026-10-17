@@ -13,6 +13,11 @@ function numeric(value: string | number | null): number {
   return value === null ? 0 : Number(value);
 }
 
+export function calculateVariationPercent(netUnits: number, previousNetUnits: number): number | null {
+  if (previousNetUnits === 0) return null;
+  return ((netUnits - previousNetUnits) / Math.abs(previousNetUnits)) * 100;
+}
+
 export async function getOverview(scope: Scope, period: Period) {
   const result = await query<{
     net_units: string;
@@ -59,7 +64,7 @@ export async function getOverview(scope: Scope, period: Period) {
   const row = result.rows[0];
   const netUnits = numeric(row.net_units);
   const previousNetUnits = numeric(row.previous_net_units);
-  const variationPercent = previousNetUnits === 0 ? null : ((netUnits - previousNetUnits) / Math.abs(previousNetUnits)) * 100;
+  const variationPercent = calculateVariationPercent(netUnits, previousNetUnits);
 
   return {
     period: { from: period.from, to: period.to },

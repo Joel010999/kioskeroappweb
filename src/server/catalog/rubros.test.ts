@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveRubroName, CANONICAL_RUBROS, compareRubros, compareByRubroAndProduct } from "./rubros";
+import { resolveRubroName, CANONICAL_RUBROS, compareRubros, compareByRubroAndProduct, isSinRubro } from "./rubros";
 
 describe("catalog/rubros", () => {
   it("resolves specific cigarette codes mentioned in user report", () => {
@@ -80,5 +80,19 @@ describe("catalog/rubros", () => {
       "Cosa sin rubro B", // Sin rubro
     ]);
   });
+
+  it("identifies all variants of Sin rubro correctly with isSinRubro", () => {
+    expect(isSinRubro(null)).toBe(true);
+    expect(isSinRubro(undefined)).toBe(true);
+    expect(isSinRubro("")).toBe(true);
+    expect(isSinRubro("   ")).toBe(true);
+    expect(isSinRubro("SIN RUBRO")).toBe(true);
+    expect(isSinRubro("Sin rubro")).toBe(true);
+    expect(isSinRubro("__SIN_RUBRO__")).toBe(true);
+    expect(isSinRubro("__sin_rubro__")).toBe(true);
+    expect(isSinRubro("ALMACEN")).toBe(false);
+    expect(isSinRubro("BEBIDAS")).toBe(false);
+  });
 });
+
 
