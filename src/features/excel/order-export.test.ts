@@ -3,6 +3,7 @@ import * as xlsx from "xlsx";
 import {
   buildReplenishmentWorkbook,
   buildOrderWorkbook,
+  resolveBranchStockHeader,
   type ReplenishmentExportItem,
   type OrderExportItem,
 } from "./order-export";
@@ -59,7 +60,7 @@ describe("Excel Export Module", () => {
       expect(rows[1][0]).toContain("Centro (PV 2)");
       expect(rows[1][1]).toContain("2026-10-15");
 
-      // Check table column headers row (9 columns: Bulto (Equiv.), Abastecimiento and Unidad removed)
+      // Check table column headers row (9 columns: Stock Central and Stock Depósito)
       const headersRow = rows[3];
       expect(headersRow).toEqual([
         "Código",
@@ -67,8 +68,8 @@ describe("Excel Export Module", () => {
         "Rubro",
         "Proveedor",
         "Presentación",
-        "Stock Sucursal",
-        "Stock Depósito Central",
+        "Stock Central",
+        "Stock Depósito",
         "Sugerida",
         "Solicitada",
       ]);
@@ -80,8 +81,8 @@ describe("Excel Export Module", () => {
       expect(firstProductRow[2]).toBe("GOLOSINAS");
       expect(firstProductRow[3]).toBe("PROV1");
       expect(firstProductRow[4]).toBe("Unidad");
-      expect(firstProductRow[5]).toBe(12); // Stock Sucursal
-      expect(firstProductRow[6]).toBe(150); // Stock Depósito Central
+      expect(firstProductRow[5]).toBe(12); // Stock Central
+      expect(firstProductRow[6]).toBe(150); // Stock Depósito
       expect(firstProductRow[7]).toBe(48); // Sugerida
       expect(firstProductRow[8]).toBe(48); // Solicitada
 
@@ -90,8 +91,8 @@ describe("Excel Export Module", () => {
       expect(secondProductRow[0]).toBe(202);
       expect(secondProductRow[2]).toBe("Sin rubro");
       expect(secondProductRow[4]).toBe("Bulto (6 u.)");
-      expect(secondProductRow[5]).toBe(5); // Stock Sucursal
-      expect(secondProductRow[6]).toBe(80); // Stock Depósito Central
+      expect(secondProductRow[5]).toBe(5); // Stock Central
+      expect(secondProductRow[6]).toBe(80); // Stock Depósito
       expect(secondProductRow[7]).toBe(24); // Sugerida
       expect(secondProductRow[8]).toBe(36); // Solicitada
 
@@ -152,8 +153,8 @@ describe("Excel Export Module", () => {
         "Rubro",
         "Proveedor",
         "Presentación",
-        "Stock Sucursal",
-        "Stock Depósito Central",
+        "Stock Jardín",
+        "Stock Depósito",
         "Sugerida",
         "Solicitada",
       ]);
@@ -162,6 +163,10 @@ describe("Excel Export Module", () => {
       expect(headers).not.toContain("Bulto (Equiv.)");
       expect(headers).not.toContain("Abastecimiento");
       expect(headers).not.toContain("Unidad");
+      expect(headers).not.toContain("Stock Depósito Central");
+      expect(headers).not.toContain("Stock Sucursal");
+      expect(headers).toContain("Stock Jardín");
+      expect(headers).toContain("Stock Depósito");
 
       // Verify row values
       const firstRow = rows[4]; // ALMACEN comes first alphabetically
@@ -169,8 +174,8 @@ describe("Excel Export Module", () => {
       expect(firstRow[2]).toBe("ALMACEN");
       expect(firstRow[3]).toBe("-"); // Null supplier rendered as -
       expect(firstRow[4]).toBe("Unidad");
-      expect(firstRow[5]).toBe(2.5); // Preserves decimals
-      expect(firstRow[6]).toBe(15.5);
+      expect(firstRow[5]).toBe(2.5); // Preserves decimals in Stock Jardín
+      expect(firstRow[6]).toBe(15.5); // Stock Depósito
       expect(firstRow[7]).toBe(5);
       expect(firstRow[8]).toBe(7.5);
 
@@ -179,7 +184,7 @@ describe("Excel Export Module", () => {
       expect(secondRow[2]).toBe("CARAMELOS");
       expect(secondRow[3]).toBe("60642"); // Preserves ERP code
       expect(secondRow[4]).toBe("Bulto (24 u.)");
-      expect(secondRow[5]).toBe(10);
+      expect(secondRow[5]).toBe(10); // Stock Jardín
       expect(secondRow[6]).toBe("-"); // Null depot stock rendered as -
       expect(secondRow[7]).toBe(24);
       expect(secondRow[8]).toBe(48);
@@ -314,7 +319,8 @@ describe("Excel Export Module", () => {
         "Proveedor",
         "Presentación",
         "Bulto (Equiv.)",
-        "Stock Depósito Central",
+        "Stock Jardín",
+        "Stock Depósito",
         "Solicitado",
         "Aprobado",
         "Preparado",
@@ -330,12 +336,13 @@ describe("Excel Export Module", () => {
       expect(item1[3]).toBe("50350");
       expect(item1[4]).toBe("Unidad");
       expect(item1[5]).toBe("-");
-      expect(item1[6]).toBe(250); // Stock Depósito Central
-      expect(item1[7]).toBe(50);
+      expect(item1[6]).toBe("-"); // Stock Jardín
+      expect(item1[7]).toBe(250); // Stock Depósito
       expect(item1[8]).toBe(50);
-      expect(item1[9]).toBe(45);
+      expect(item1[9]).toBe(50);
       expect(item1[10]).toBe(45);
       expect(item1[11]).toBe(45);
+      expect(item1[12]).toBe(45);
 
       const item2 = rows[5];
       expect(item2[0]).toBe(302);
@@ -343,20 +350,21 @@ describe("Excel Export Module", () => {
       expect(item2[3]).toBe("600207");
       expect(item2[4]).toBe("Bulto (18 u.)");
       expect(item2[5]).toBe("18 u.");
-      expect(item2[6]).toBe(90); // Stock Depósito Central
-      expect(item2[7]).toBe(20);
-      expect(item2[8]).toBe(15);
-      expect(item2[12]).toBe("1 UN");
+      expect(item2[6]).toBe("-"); // Stock Jardín
+      expect(item2[7]).toBe(90); // Stock Depósito
+      expect(item2[8]).toBe(20);
+      expect(item2[9]).toBe(15);
+      expect(item2[13]).toBe("1 UN");
 
       const totalsRow = rows[rows.length - 1];
       expect(totalsRow[0]).toBe("TOTALES");
       expect(totalsRow[1]).toBe("2 productos");
       // Total solicitado: 70
-      expect(totalsRow[7]).toBe(70);
+      expect(totalsRow[8]).toBe(70);
       // Total aprobado: 65
-      expect(totalsRow[8]).toBe(65);
+      expect(totalsRow[9]).toBe(65);
       // Total preparado: 60
-      expect(totalsRow[9]).toBe(60);
+      expect(totalsRow[10]).toBe(60);
     });
 
     it("does not mutate original items array or object properties during export", () => {
@@ -450,4 +458,29 @@ describe("Excel Export Module", () => {
       });
     });
   });
+
+  describe("resolveBranchStockHeader", () => {
+    it("resolves Centro or Central variants to Stock Central", () => {
+      expect(resolveBranchStockHeader("Centro")).toBe("Stock Central");
+      expect(resolveBranchStockHeader("Centro (PV 2)")).toBe("Stock Central");
+      expect(resolveBranchStockHeader("Central")).toBe("Stock Central");
+      expect(resolveBranchStockHeader("CENTRO")).toBe("Stock Central");
+    });
+
+    it("resolves Jardín variants to Stock Jardín", () => {
+      expect(resolveBranchStockHeader("Jardín")).toBe("Stock Jardín");
+      expect(resolveBranchStockHeader("Jardín (PV 3)")).toBe("Stock Jardín");
+      expect(resolveBranchStockHeader("Jardin")).toBe("Stock Jardín");
+    });
+
+    it("falls back to Stock Central if label is empty or undefined", () => {
+      expect(resolveBranchStockHeader("")).toBe("Stock Central");
+      expect(resolveBranchStockHeader(undefined)).toBe("Stock Central");
+    });
+
+    it("resolves custom branch names to Stock {Name}", () => {
+      expect(resolveBranchStockHeader("Sucursal Norte")).toBe("Stock Sucursal Norte");
+    });
+  });
 });
+

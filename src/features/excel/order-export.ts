@@ -29,6 +29,8 @@ export type OrderExportItem = {
   package_units?: number | null;
   presentation?: string | null;
   presentation_display?: string | null;
+  stock_current?: number | null;
+  stock_at_creation?: number | null;
   stock_depot?: number | null;
   requested_quantity: number;
   approved_quantity: number | null;
@@ -37,6 +39,22 @@ export type OrderExportItem = {
   received_quantity: number | null;
   unit_measure_snapshot?: string | null;
 };
+
+export function resolveBranchStockHeader(branchLabel?: string): string {
+  if (!branchLabel) return "Stock Central";
+  const cleaned = branchLabel.replace(/\s*\(.*?\)\s*/g, "").trim();
+  const lower = cleaned.toLowerCase();
+  if (lower === "centro" || lower === "central" || lower.includes("centro") || lower.includes("central")) {
+    return "Stock Central";
+  }
+  if (lower === "jardín" || lower === "jardin" || lower.includes("jardín") || lower.includes("jardin")) {
+    return "Stock Jardín";
+  }
+  if (lower) {
+    return `Stock ${cleaned}`;
+  }
+  return "Stock Central";
+}
 
 export function buildReplenishmentWorkbook(params: {
   items: ReplenishmentExportItem[];
@@ -73,6 +91,8 @@ export function buildReplenishmentWorkbook(params: {
   ]);
   aoa.push([]); // blank line
 
+  const branchStockHeader = resolveBranchStockHeader(branchLabel);
+
   // Column table headers
   aoa.push([
     "Código",
@@ -80,8 +100,8 @@ export function buildReplenishmentWorkbook(params: {
     "Rubro",
     "Proveedor",
     "Presentación",
-    "Stock Sucursal",
-    "Stock Depósito Central",
+    branchStockHeader,
+    "Stock Depósito",
     "Sugerida",
     "Solicitada",
   ]);
@@ -141,8 +161,8 @@ export function buildReplenishmentWorkbook(params: {
     { wch: 22 }, // Rubro
     { wch: 14 }, // Proveedor
     { wch: 18 }, // Presentación
-    { wch: 14 }, // Stock Sucursal
-    { wch: 22 }, // Stock Depósito Central
+    { wch: 16 }, // Stock Central (o sucursal)
+    { wch: 16 }, // Stock Depósito
     { wch: 12 }, // Sugerida
     { wch: 12 }, // Solicitada
   ];
@@ -211,6 +231,8 @@ export function buildOrderWorkbook(params: {
   ]);
   aoa.push([]);
 
+  const branchStockHeader = resolveBranchStockHeader(branchLabel);
+
   aoa.push([
     "Código",
     "Descripción",
@@ -218,7 +240,8 @@ export function buildOrderWorkbook(params: {
     "Proveedor",
     "Presentación",
     "Bulto (Equiv.)",
-    "Stock Depósito Central",
+    branchStockHeader,
+    "Stock Depósito",
     "Solicitado",
     "Aprobado",
     "Preparado",
@@ -255,6 +278,13 @@ export function buildOrderWorkbook(params: {
     const equivText =
       pres.packageUnits && pres.packageUnits > 1 ? `${pres.packageUnits} u.` : "-";
 
+    const branchStock =
+      item.stock_current !== undefined && item.stock_current !== null
+        ? item.stock_current
+        : item.stock_at_creation !== undefined && item.stock_at_creation !== null
+          ? item.stock_at_creation
+          : null;
+
     aoa.push([
       item.article_id,
       item.product_name_snapshot,
@@ -262,6 +292,7 @@ export function buildOrderWorkbook(params: {
       item.supplier_code_snapshot || "-",
       pres.displayText,
       equivText,
+      branchStock !== null ? branchStock : "-",
       item.stock_depot !== undefined && item.stock_depot !== null ? item.stock_depot : "-",
       item.requested_quantity,
       item.approved_quantity !== null ? item.approved_quantity : "-",
@@ -276,6 +307,7 @@ export function buildOrderWorkbook(params: {
   aoa.push([
     "TOTALES",
     `${sortedItems.length} productos`,
+    null,
     null,
     null,
     null,
@@ -297,7 +329,8 @@ export function buildOrderWorkbook(params: {
     { wch: 14 }, // Proveedor
     { wch: 18 }, // Presentación
     { wch: 14 }, // Bulto (Equiv.)
-    { wch: 22 }, // Stock Depósito Central
+    { wch: 16 }, // Stock Central (o sucursal)
+    { wch: 16 }, // Stock Depósito
     { wch: 12 }, // Solicitado
     { wch: 12 }, // Aprobado
     { wch: 12 }, // Preparado

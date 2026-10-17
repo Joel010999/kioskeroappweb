@@ -1091,12 +1091,12 @@ export function ReplenishmentReviewClient({
                   <th>Rubro</th>
                   <th>Abastecimiento</th>
                   <th>Clasificación</th>
-                  <th>Stock PV</th>
+                  <th>Stock {branchName === "Centro" ? "Central" : branchName}</th>
                   <th>Demanda semanal</th>
                   <th>Objetivo (10d)</th>
                   <th>Sugerida</th>
                   <th>Solicitada</th>
-                  <th>Stock depósito central</th>
+                  <th>Stock depósito</th>
                   <th>Estado depósito</th>
                   <th>Estado</th>
                 </tr>
@@ -1221,7 +1221,7 @@ export function ReplenishmentReviewClient({
                         </div>
                       </td>
                       <td
-                        data-label="Stock depósito central"
+                        data-label="Stock depósito"
                         className={
                           item.stock_depot !== null && item.stock_depot < 0
                             ? "negative-number"
@@ -1233,7 +1233,7 @@ export function ReplenishmentReviewClient({
                           : `${units.format(item.stock_depot)} u.`}
                         {depotShort && (
                           <small className="depot-warning">
-                            Stock depósito central menor a sugerencia
+                            Stock depósito menor a sugerencia
                           </small>
                         )}
                       </td>
@@ -1381,7 +1381,7 @@ export function ReplenishmentReviewClient({
               <div className="confirm-pill-info">
                 <span>ℹ️ Unidades y bultos</span>
                 <p>
-                  Las cantidades se registran en <strong>unidades individuales</strong>. A continuación podés verificar la presentación comercial de cada artículo (Bulto o Unidad) y el stock disponible en el depósito central.
+                  Las cantidades se registran en <strong>unidades individuales</strong>. A continuación podés verificar la presentación comercial de cada artículo (Bulto o Unidad) y el stock disponible en el depósito.
                 </p>
               </div>
             </div>
@@ -1393,7 +1393,7 @@ export function ReplenishmentReviewClient({
                     <th>Producto</th>
                     <th>Rubro</th>
                     <th>Presentación</th>
-                    <th>Stock Depósito Central</th>
+                    <th>Stock Depósito</th>
                     <th>Cantidad solicitada</th>
                   </tr>
                 </thead>

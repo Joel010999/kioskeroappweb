@@ -779,7 +779,7 @@ export function OrderDetailClient({
                   <th>Producto</th>
                   <th>Presentación</th>
                   <th>Rubro</th>
-                  <th>Stock Depósito Central</th>
+                  <th>Stock Depósito</th>
                   <th>Solicitado</th>
                   <th>Aprobado</th>
                   <th>Preparado</th>
@@ -815,7 +815,7 @@ export function OrderDetailClient({
                         {item.rubro || "Sin rubro"}
                       </span>
                     </td>
-                    <td data-label="Stock Depósito Central">
+                    <td data-label="Stock Depósito">
                       {item.stock_depot !== null && item.stock_depot !== undefined
                         ? `${fmt.format(item.stock_depot)} u.`
                         : "-"}
