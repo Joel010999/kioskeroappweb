@@ -134,7 +134,6 @@ export function WeeklyReplenishmentClient({
     <main className="orders-shell replenishment-shell">
       <header className="orders-topbar">
         <Link className="brand" href="/dashboard">
-          <span className="brand-mark">LCQ</span>
           <span>LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span>
           </span>
         </Link>

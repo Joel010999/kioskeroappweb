@@ -119,7 +119,6 @@ function Header({
   return (
     <header className="orders-topbar">
       <a className="brand" href="/dashboard">
-        <span className="brand-mark">LCQ</span>
         <span>LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span>
         </span>
       </a>

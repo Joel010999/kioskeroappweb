@@ -290,6 +290,7 @@ export function ReplenishmentReviewClient({
   const [confirmedOrderId, setConfirmedOrderId] = useState<number | null>(null);
   const [existingOrder, setExistingOrder] = useState<{
     id: number;
+    orderNumber: number;
     branchId: string;
     planningDate: string;
   } | null>(null);
@@ -297,7 +298,7 @@ export function ReplenishmentReviewClient({
   const currentExistingOrder =
     existingOrder?.branchId === branchId &&
     existingOrder.planningDate === planningDate
-      ? existingOrder.id
+      ? existingOrder
       : null;
 
   const handlePlanningDateChange = (newDate: string) => {
@@ -481,10 +482,15 @@ export function ReplenishmentReviewClient({
           return next;
         });
 
-        const existingId = existing.rows?.[0]?.id;
+        const existingRow = existing.rows?.[0];
         setExistingOrder(
-          typeof existingId === "number"
-            ? { id: existingId, branchId, planningDate }
+          existingRow
+            ? {
+                id: Number(existingRow.id),
+                orderNumber: Number(existingRow.order_number ?? existingRow.id),
+                branchId,
+                planningDate,
+              }
             : null,
         );
         setConfirmedOrder(null);
@@ -690,7 +696,12 @@ export function ReplenishmentReviewClient({
       const returnedId = result.id;
       setConfirmedOrder(returnedOrderNumber);
       setConfirmedOrderId(returnedId);
-      setExistingOrder({ id: returnedId, branchId, planningDate });
+      setExistingOrder({
+        id: returnedId,
+        orderNumber: returnedOrderNumber,
+        branchId,
+        planningDate,
+      });
       try {
         localStorage.removeItem(draftStorageKey(branchId, planningDate));
       } catch {}
@@ -774,7 +785,6 @@ export function ReplenishmentReviewClient({
     <main className="orders-shell replenishment-review-shell">
       <header className="orders-topbar">
         <Link className="brand" href="/dashboard">
-          <span className="brand-mark">LCQ</span>
           <span>
             LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span>
           </span>
@@ -930,9 +940,9 @@ export function ReplenishmentReviewClient({
           {currentExistingOrder && (
             <Link
               className="order-primary"
-              href={`/orders/${currentExistingOrder}`}
+              href={`/orders/${currentExistingOrder.orderNumber}`}
             >
-              Solicitud existente #{currentExistingOrder}
+              Solicitud existente #{currentExistingOrder.orderNumber}
             </Link>
           )}
 

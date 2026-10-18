@@ -126,7 +126,6 @@ export function SuggestionsClient({ branchId }: { branchId: number }) {
     <main className="orders-shell">
       <header className="orders-topbar">
         <Link className="brand" href="/dashboard">
-          <span className="brand-mark">LCQ</span>
           <span>LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span>
           </span>
         </Link>

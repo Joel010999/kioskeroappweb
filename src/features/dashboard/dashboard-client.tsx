@@ -38,7 +38,7 @@ function periodFor(key: string): Period {
   }
 }
 
-function Icon({ name, size = 18 }: { name: "refresh" | "calendar" | "trend" | "box" | "pulse" | "search" | "arrow" | "attention"; size?: number }) {
+function Icon({ name, size = 18 }: { name: "refresh" | "calendar" | "trend" | "box" | "pulse" | "search" | "arrow" | "attention" | "truck" | "upload" | "cart" | "sliders"; size?: number }) {
   const paths = {
     refresh: <><path d="M20 11a8 8 0 1 0 2.1 5.4" /><path d="M20 4v7h-7" /></>,
     calendar: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18" /></>,
@@ -48,6 +48,10 @@ function Icon({ name, size = 18 }: { name: "refresh" | "calendar" | "trend" | "b
     search: <><circle cx="11" cy="11" r="6" /><path d="m20 20-4.2-4.2" /></>,
     arrow: <path d="m9 18 6-6-6-6" />,
     attention: <><path d="M12 3 2.8 20h18.4L12 3Z" /><path d="M12 9v4M12 17h.01" /></>,
+    truck: <><rect x="1" y="4" width="14" height="12" rx="1.5" /><path d="M15 8h4l3 3.5V16h-7V8z" /><circle cx="5.5" cy="18.5" r="2" /><circle cx="18.5" cy="18.5" r="2" /></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
+    cart: <><circle cx="9" cy="20" r="1.5" /><circle cx="18" cy="20" r="1.5" /><path d="M1 1h4l2.5 12h11.5l2-8H5.5" /></>,
+    sliders: <><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><circle cx="4" cy="12" r="2" /><circle cx="12" cy="6" r="2" /><circle cx="20" cy="14" r="2" /></>,
   };
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
@@ -119,25 +123,90 @@ export function DashboardClient({ branchName, warehouse }: { branchName: string;
   const reviewStock = () => { setStockSearch(""); setPage(1); document.getElementById("stock")?.scrollIntoView({ behavior: "smooth", block: "start" }); };
 
   return <main className="dashboard-shell">
-    <header className="topbar"><a className="brand" href="/dashboard" aria-label="Dashboard de La Casa del Kioskero"><span className="brand-mark">LCQ</span><span>LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span></span></a><nav aria-label="Secciones"><a className="active" href="#overview">Resumen</a><a href="#evolucion">Evolución</a><a href="#productos">Productos</a><a href="#stock">Stock</a>{warehouse ? <a href="/orders/warehouse">Operacion</a> : <a href="/orders/suggestions">Sugerencias</a>}</nav><div className="branch"><span className="status-dot" />{branchName}</div><button className={`refresh ${isRefreshing ? "is-refreshing" : ""}`} onClick={refresh} disabled={isRefreshing} aria-label="Actualizar datos" aria-live="polite"><Icon name="refresh" /> <span>{isRefreshing ? "Actualizando" : "Actualizar"}</span></button><LogoutButton /></header>
+    <header className="topbar"><a className="brand" href="/dashboard" aria-label="Dashboard de La Casa del Kioskero"><span>LA CASA DEL KIOSKERO<span className="brand-sub">Panel de operación</span></span></a><nav aria-label="Secciones"><a className="active" href="#overview">Resumen</a><a href="#evolucion">Evolución</a><a href="#productos">Productos</a><a href="#stock">Stock</a>{warehouse ? <a href="/orders/warehouse">Operación</a> : <a href="/orders">Mis Pedidos</a>}</nav><div className="branch"><span className="status-dot" />{branchName}</div><button className={`refresh ${isRefreshing ? "is-refreshing" : ""}`} onClick={refresh} disabled={isRefreshing} aria-label="Actualizar datos" aria-live="polite"><Icon name="refresh" /> <span>{isRefreshing ? "Actualizando" : "Actualizar"}</span></button><LogoutButton /></header>
 
     <section className="period-bar" aria-label="Selector de período"><div><p className="page-context">Dashboard de La Casa del Kioskero · {branchName}</p><h1>Estado de la operación</h1><p>Ventas, disponibilidad y datos de una misma jornada de decisión.</p>{activeOverview?.last_updated_at && <span className="last-updated">Actualizado {dateTime.format(new Date(activeOverview.last_updated_at))}</span>}</div><div className="period-controls"><label className="select-wrap"><Icon name="calendar" size={16} /><span className="sr-only">Período rápido</span><select value={period.label} onChange={(event) => applyPreset(Object.entries({ today: "Hoy", yesterday: "Ayer", week: "Últimos 7 días", month: "Últimos 30 días", "current-month": "Mes actual", "previous-month": "Mes anterior", year: "Año actual", custom: "Personalizado" }).find(([, value]) => value === event.target.value)?.[0] ?? "custom")}><option>Hoy</option><option>Ayer</option><option>Últimos 7 días</option><option>Últimos 30 días</option><option>Mes actual</option><option>Mes anterior</option><option>Año actual</option><option>Personalizado</option></select></label><div className="date-pair"><label className="date-input"><span>Desde</span><input type="date" value={period.from} onChange={(event) => setPeriod((current) => ({ ...current, from: event.target.value, to: event.target.value > current.to ? event.target.value : current.to, label: "Personalizado" }))} /></label><span>→</span><label className="date-input"><span>Hasta</span><input type="date" value={period.to} min={period.from} onChange={(event) => setPeriod((current) => ({ ...current, to: event.target.value < current.from ? current.from : event.target.value, label: "Personalizado" }))} /></label></div></div></section>
 
-    <nav className="dashboard-operation-nav" aria-label="Operación">
-      {warehouse ? (
-        <>
-          <a href="/deposit/upload">Cargar Stock Depósito</a>
-          <a href="/orders/warehouse">Operación de depósito</a>
-        </>
-      ) : (
-        <>
-          <a href="/replenishment">Reposición semanal</a>
-          <a href="/orders/suggestions">Sugerencias V1</a>
-          <a href="/supply-rules">Abastecimiento</a>
-          <a href="/orders">Pedidos</a>
-        </>
-      )}
-    </nav>
+    <section className="dashboard-action-section" aria-label="Operaciones principales">
+      <div className="dashboard-action-head">
+        <h2>Operaciones del sistema</h2>
+        <p>{warehouse ? "Gestión de pedidos de sucursales y actualización de stock" : "Reposición de mercadería y seguimiento de solicitudes"}</p>
+      </div>
+      <div className={`dashboard-action-grid ${warehouse ? "warehouse-grid" : "pv-grid"}`}>
+        {warehouse ? (
+          <>
+            <a className="action-card action-card-primary" href="/orders/warehouse">
+              <div className="action-card-top">
+                <span className="action-card-tag">Circuito de despacho</span>
+                <span className="action-card-icon"><Icon name="truck" size={20} /></span>
+              </div>
+              <div className="action-card-body">
+                <h3>Bandeja de Depósito</h3>
+                <p>Revisar pedidos confirmados por las sucursales, preparar cantidades y registrar los despachos.</p>
+              </div>
+              <div className="action-card-footer">
+                <span className="action-card-btn">Abrir Bandeja de Operación <Icon name="arrow" size={14} /></span>
+              </div>
+            </a>
+            <a className="action-card action-card-secondary" href="/deposit/upload">
+              <div className="action-card-top">
+                <span className="action-card-tag">Inventario oficial</span>
+                <span className="action-card-icon"><Icon name="upload" size={20} /></span>
+              </div>
+              <div className="action-card-body">
+                <h3>Cargar Stock Depósito</h3>
+                <p>Subir la planilla Excel con los saldos actualizados del depósito para sincronizar disponibilidad con los PVs.</p>
+              </div>
+              <div className="action-card-footer">
+                <span className="action-card-btn">Subir reporte Excel <Icon name="arrow" size={14} /></span>
+              </div>
+            </a>
+          </>
+        ) : (
+          <>
+            <a className="action-card action-card-primary" href="/replenishment">
+              <div className="action-card-top">
+                <span className="action-card-tag">Sugerencia inteligente</span>
+                <span className="action-card-icon"><Icon name="cart" size={20} /></span>
+              </div>
+              <div className="action-card-body">
+                <h3>Reposición Semanal</h3>
+                <p>Calcular sugerencia de demanda (YoY), ajustar cantidades requeridas y enviar pedido al depósito central.</p>
+              </div>
+              <div className="action-card-footer">
+                <span className="action-card-btn">Hacer Pedido de Reposición <Icon name="arrow" size={14} /></span>
+              </div>
+            </a>
+            <a className="action-card action-card-secondary" href="/orders">
+              <div className="action-card-top">
+                <span className="action-card-tag">Seguimiento y recepción</span>
+                <span className="action-card-icon"><Icon name="truck" size={20} /></span>
+              </div>
+              <div className="action-card-body">
+                <h3>Mis Pedidos</h3>
+                <p>Consultar estado en tiempo real (en preparación, despachado) y confirmar la recepción de mercadería física.</p>
+              </div>
+              <div className="action-card-footer">
+                <span className="action-card-btn">Ver Historial de Pedidos <Icon name="arrow" size={14} /></span>
+              </div>
+            </a>
+            <a className="action-card action-card-tertiary" href="/supply-rules">
+              <div className="action-card-top">
+                <span className="action-card-tag">Configuración</span>
+                <span className="action-card-icon"><Icon name="sliders" size={20} /></span>
+              </div>
+              <div className="action-card-body">
+                <h3>Rutas de Abastecimiento</h3>
+                <p>Definir si cada artículo se pide al Depósito central o a Proveedor Directo para tu punto de venta.</p>
+              </div>
+              <div className="action-card-footer">
+                <span className="action-card-btn">Configurar Rutas <Icon name="arrow" size={14} /></span>
+              </div>
+            </a>
+          </>
+        )}
+      </div>
+    </section>
     <section id="overview" className="signal-grid" aria-label="Indicadores principales">
       <Metric featured label="Unidades netas" value={activeOverview ? periodIsEmpty ? "—" : units.format(activeOverview.net_units) : ""} note={periodIsEmpty ? "No hay movimientos en este período" : `${period.label} · VT suma, IN resta`} icon="trend" loading={overview.loading} />
       <Metric label="Movimientos" value={activeOverview ? periodIsEmpty ? "—" : number.format(activeOverview.movements) : ""} note={periodIsEmpty ? "Sin actividad registrada" : "actividad registrada"} icon="pulse" loading={overview.loading} />
