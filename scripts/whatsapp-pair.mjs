@@ -85,12 +85,18 @@ async function runPairing(cleanPreviousSession = false) {
             "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
             ["default", "creds"]
           );
+          const allKeysCheck = await query(
+            "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
+            ["default"]
+          );
           const count = parseInt(check.rows?.[0]?.count || "0", 10);
+          const totalKeys = parseInt(allKeysCheck.rows?.[0]?.count || "0", 10);
           if (count === 0) {
             console.error("\n❌ [ERROR CRÍTICO] La conexión abrió pero el registro 'creds' no existe en PostgreSQL.");
             process.exit(1);
           }
-          console.log("\n✅ [ÉXITO] ¡Dispositivo vinculado correctamente!");
+          console.log(`\n[PAIR DIAGNOSTIC] Verificación en PostgreSQL: ${totalKeys} claves guardadas, registro 'creds' confirmado.`);
+          console.log("✅ [ÉXITO] ¡Dispositivo vinculado correctamente!");
           console.log("Las credenciales fueron cifradas con AES-256-GCM y confirmadas en PostgreSQL.");
           console.log("Ya podés iniciar el servicio Worker en Railway.\n");
         } catch (err) {

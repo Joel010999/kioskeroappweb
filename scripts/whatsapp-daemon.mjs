@@ -97,13 +97,26 @@ async function startSocket() {
         "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
         ["default", "creds"]
       );
+      const totalKeysCheck = await query(
+        "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
+        ["default"]
+      );
       const hasCreds = parseInt(credsCheck.rows?.[0]?.count || "0", 10) > 0;
+      const totalKeys = parseInt(totalKeysCheck.rows?.[0]?.count || "0", 10);
+
+      logger.info(
+        { hasCreds, totalKeys, sessionId: "default" },
+        `[WHATSAPP DAEMON DIAGNOSTIC] Session 'default' in PostgreSQL: ${totalKeys} total keys stored, 'creds' present: ${hasCreds}`
+      );
+
       if (hasCreds) {
-        logger.info("Found registered session credentials in PostgreSQL. Resuming connection...");
+        logger.info("[WHATSAPP DAEMON DIAGNOSTIC] Found registered session credentials in PostgreSQL. Resuming connection...");
       } else {
         logger.warn(
-          "No registered credentials found in PostgreSQL for key 'creds'. " +
-          "If previously paired, verify that WHATSAPP_SESSION_ENCRYPTION_KEY and DATABASE_URL match the pairing environment."
+          { totalKeys, hasCreds },
+          `[WHATSAPP DAEMON DIAGNOSTIC] No registered credentials found in PostgreSQL for key 'creds' (total keys: ${totalKeys}). ` +
+          "Baileys cannot resume a session because PostgreSQL does not have pairing credentials. " +
+          "Execute pairing using 'node scripts/whatsapp-pair.mjs <phone>' against the Railway database to store credentials."
         );
       }
     } catch (checkErr) {

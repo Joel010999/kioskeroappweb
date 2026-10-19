@@ -64,6 +64,25 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
 
   await ensureSessionTable();
 
+  let totalKeysInDb = 0;
+  if (!process.env.VITEST) {
+    try {
+      const stats = await query<{ count: string }>(
+        `SELECT count(*)::text as count FROM whatsapp_baileys_session WHERE session_id = $1`,
+        [sessionId]
+      );
+      totalKeysInDb = parseInt(stats.rows[0]?.count || "0", 10);
+      console.log(
+        `[POSTGRES AUTH DIAGNOSTIC] Session "${sessionId}": found ${totalKeysInDb} total encrypted keys in PostgreSQL.`
+      );
+    } catch (statsErr) {
+      console.warn(
+        `[POSTGRES AUTH DIAGNOSTIC] Could not query session stats:`,
+        statsErr instanceof Error ? statsErr.message : statsErr
+      );
+    }
+  }
+
   // Helper to read an encrypted item from DB (or in-memory fallback)
   async function readItem<T>(keyId: string): Promise<T | null> {
     try {
@@ -76,15 +95,23 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
       if (res.rows && res.rows.length > 0) {
         try {
           const decryptedJson = decryptSessionData(res.rows[0], key);
-          return JSON.parse(decryptedJson, BufferJSON.reviver) as T;
+          const parsed = JSON.parse(decryptedJson, BufferJSON.reviver) as T;
+          if (!process.env.VITEST && (keyId === "creds" || keyId.startsWith("app-state-sync-key"))) {
+            console.log(
+              `[POSTGRES AUTH DIAGNOSTIC] Key "${keyId}" successfully read from PostgreSQL and decrypted.`
+            );
+          }
+          return parsed;
         } catch (decryptErr) {
           console.error(
-            `[POSTGRES AUTH ERROR] Failed to decrypt session item "${keyId}". ` +
+            `[POSTGRES AUTH DIAGNOSTIC ERROR] Failed to decrypt session item "${keyId}". ` +
             `Verify that WHATSAPP_SESSION_ENCRYPTION_KEY matches the key used during pairing! ` +
             `Error: ${decryptErr instanceof Error ? decryptErr.message : decryptErr}`
           );
           return null;
         }
+      } else if (!process.env.VITEST && keyId === "creds") {
+        console.log(`[POSTGRES AUTH DIAGNOSTIC] Key "${keyId}" does not exist in PostgreSQL for session "${sessionId}".`);
       }
     } catch (err) {
       // In-memory fallback
@@ -117,6 +144,9 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
          DO UPDATE SET ciphertext = EXCLUDED.ciphertext, iv = EXCLUDED.iv, tag = EXCLUDED.tag, updated_at = now()`,
         [sessionId, keyId, encrypted.ciphertext, encrypted.iv, encrypted.tag]
       );
+      if (!process.env.VITEST && keyId === "creds") {
+        console.log(`[POSTGRES AUTH DIAGNOSTIC] Key "creds" successfully encrypted with AES-256-GCM and saved to PostgreSQL.`);
+      }
     } catch (err) {
       // In-memory fallback
       memorySessionStore.set(`${sessionId}:${keyId}`, encrypted);
@@ -141,6 +171,17 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
 
   // 1. Initialize or load credentials
   const existingCreds = await readItem<AuthenticationCreds>("creds");
+  if (!process.env.VITEST) {
+    if (existingCreds) {
+      console.log(
+        `[POSTGRES AUTH DIAGNOSTIC] Loaded credentials from PostgreSQL. Registered: ${Boolean(existingCreds.registered)}.`
+      );
+    } else {
+      console.log(
+        `[POSTGRES AUTH DIAGNOSTIC] No existing "creds" record found in PostgreSQL for session "${sessionId}". Initializing unauthenticated state.`
+      );
+    }
+  }
   const creds: AuthenticationCreds = existingCreds ?? initAuthCreds();
 
   // 2. AuthenticationState keys getter and setter
@@ -152,6 +193,7 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
       const data: { [id: string]: SignalDataTypeMap[T] } = {};
       if (ids.length === 0) return data;
 
+      let retrievedCount = 0;
       await Promise.all(
         ids.map(async (id) => {
           const keyId = `${type}:${id}`;
@@ -161,9 +203,16 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
           }
           if (value !== null && value !== undefined) {
             data[id] = value;
+            retrievedCount++;
           }
         })
       );
+
+      if (!process.env.VITEST && ids.length > 0) {
+        console.log(
+          `[POSTGRES AUTH DIAGNOSTIC] Signal keys batch: type="${type}", requested=${ids.length}, retrieved=${retrievedCount}.`
+        );
+      }
 
       return data;
     },
