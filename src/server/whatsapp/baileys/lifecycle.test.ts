@@ -97,7 +97,9 @@ describe("Baileys Worker Lifecycle & Event Handling", () => {
       });
 
       await vi.waitFor(() => {
-        expect(onConnectionClose).toHaveBeenCalledWith(true);
+        expect(onConnectionClose).toHaveBeenCalled();
+        expect(onConnectionClose.mock.calls[0][0]).toBe(true);
+        expect(onConnectionClose.mock.calls[0][1]).toBe(DisconnectReason.connectionLost);
       });
       await worker.stop();
     });
@@ -116,7 +118,9 @@ describe("Baileys Worker Lifecycle & Event Handling", () => {
       });
 
       await vi.waitFor(() => {
-        expect(onConnectionClose).toHaveBeenCalledWith(false);
+        expect(onConnectionClose).toHaveBeenCalled();
+        expect(onConnectionClose.mock.calls[0][0]).toBe(false);
+        expect(onConnectionClose.mock.calls[0][1]).toBe(DisconnectReason.loggedOut);
       });
       await worker.stop();
     });

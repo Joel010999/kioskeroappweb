@@ -1,4 +1,5 @@
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   type WASocket,
   type WAMessage,
@@ -12,14 +13,16 @@ export type BaileysWorkerConfig = {
   sessionId?: string;
   pairingNumber?: string;
   allowedNumbersEnv?: string;
+  cleanUnregisteredSession?: boolean;
   onConnectionOpen?: () => void;
-  onConnectionClose?: (shouldReconnect: boolean) => void;
+  onConnectionClose?: (shouldReconnect: boolean, statusCode?: number, error?: Error) => void;
   onPairingCode?: (code: string) => void;
   logger?: pino.Logger;
 };
 
 export type ActiveBaileysWorker = {
   socket: WASocket;
+  saveCreds: () => Promise<void>;
   stop: () => Promise<void>;
   sendMessage: (to: string, text: string) => Promise<{ success: boolean; messageId?: string; error?: string }>;
 };
@@ -67,11 +70,16 @@ export async function startBaileysWorker(
     sessionId,
   });
 
+  if (config.cleanUnregisteredSession && !state.creds.registered) {
+    await clearSession();
+  }
+
   let isStopping = false;
 
   const sock = makeWASocket({
     auth: state,
     logger,
+    browser: Browsers.ubuntu("Chrome"),
     printQRInTerminal: false,
     syncFullHistory: false,
     markOnlineOnConnect: false,
@@ -110,6 +118,7 @@ export async function startBaileysWorker(
 
     if (connection === "open") {
       logger.info("Baileys connection established successfully.");
+      await saveCreds();
       await clearEncryptedPairingCode(sessionId);
       config.onConnectionOpen?.();
     }
@@ -118,15 +127,15 @@ export async function startBaileysWorker(
       const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
-      logger.warn({ statusCode, isLoggedOut }, "Baileys connection closed.");
+      logger.warn({ statusCode, isLoggedOut, err: lastDisconnect?.error }, "Baileys connection closed.");
 
       if (isLoggedOut) {
         await clearSession();
         await clearEncryptedPairingCode(sessionId);
-        config.onConnectionClose?.(false);
+        config.onConnectionClose?.(false, statusCode, lastDisconnect?.error as Error);
       } else if (!isStopping) {
         // Reconnect needed
-        config.onConnectionClose?.(true);
+        config.onConnectionClose?.(true, statusCode, lastDisconnect?.error as Error);
       }
     }
   });
@@ -191,6 +200,7 @@ export async function startBaileysWorker(
 
   return {
     socket: sock,
+    saveCreds,
     stop,
     sendMessage,
   };

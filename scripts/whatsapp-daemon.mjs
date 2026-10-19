@@ -12,6 +12,12 @@ const { startBaileysWorker } = await import(
 const { registerActiveSender } = await import(
   "../src/server/whatsapp/client.ts"
 );
+const { ensureSessionTable } = await import(
+  "../src/server/whatsapp/baileys/auth-state.ts"
+);
+const { query } = await import(
+  "../src/server/db/client.ts"
+);
 
 const logger = pino({
   level: process.env.LOG_LEVEL || "info",
@@ -85,6 +91,25 @@ async function startSocket() {
   if (isShuttingDown || !currentLockHandle?.acquired) return;
 
   try {
+    await ensureSessionTable();
+    try {
+      const credsCheck = await query(
+        "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
+        ["default", "creds"]
+      );
+      const hasCreds = parseInt(credsCheck.rows?.[0]?.count || "0", 10) > 0;
+      if (hasCreds) {
+        logger.info("Found registered session credentials in PostgreSQL. Resuming connection...");
+      } else {
+        logger.warn(
+          "No registered credentials found in PostgreSQL for key 'creds'. " +
+          "If previously paired, verify that WHATSAPP_SESSION_ENCRYPTION_KEY and DATABASE_URL match the pairing environment."
+        );
+      }
+    } catch (checkErr) {
+      logger.warn({ err: checkErr instanceof Error ? checkErr.message : checkErr }, "Warning checking session table.");
+    }
+
     logger.info("Connecting to WhatsApp via Baileys...");
     activeWorker = await startBaileysWorker({
       sessionId: "default",

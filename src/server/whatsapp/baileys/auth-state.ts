@@ -1,6 +1,7 @@
 import {
   BufferJSON,
   initAuthCreds,
+  proto,
   type AuthenticationCreds,
   type AuthenticationState,
   type SignalDataSet,
@@ -17,6 +18,37 @@ type SessionStoreOptions = {
 
 // Fallback in-memory map for unit tests when DB is mocked or unavailable
 const memorySessionStore = new Map<string, EncryptedPayload>();
+let tableEnsured = false;
+
+/**
+ * Ensures the whatsapp_baileys_session table exists in PostgreSQL.
+ */
+export async function ensureSessionTable(): Promise<void> {
+  if (tableEnsured) return;
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_baileys_session (
+        session_id text NOT NULL DEFAULT 'default',
+        key_id text NOT NULL,
+        ciphertext text NOT NULL,
+        iv text NOT NULL,
+        tag text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (session_id, key_id)
+      )
+    `);
+    await query(`
+      CREATE INDEX IF NOT EXISTS whatsapp_baileys_session_lookup_idx
+        ON whatsapp_baileys_session (session_id, key_id)
+    `);
+    tableEnsured = true;
+  } catch (err) {
+    if (!process.env.VITEST) {
+      console.warn("[POSTGRES AUTH] Warning: Could not ensure whatsapp_baileys_session table:", err instanceof Error ? err.message : err);
+    }
+  }
+}
 
 /**
  * Custom PostgreSQL authentication state adapter for Baileys.
@@ -30,6 +62,8 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
   const sessionId = options.sessionId ?? "default";
   const key = options.encryptionKey ?? deriveSessionKey();
 
+  await ensureSessionTable();
+
   // Helper to read an encrypted item from DB (or in-memory fallback)
   async function readItem<T>(keyId: string): Promise<T | null> {
     try {
@@ -40,15 +74,31 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
       );
 
       if (res.rows && res.rows.length > 0) {
-        const decryptedJson = decryptSessionData(res.rows[0], key);
-        return JSON.parse(decryptedJson, BufferJSON.reviver) as T;
+        try {
+          const decryptedJson = decryptSessionData(res.rows[0], key);
+          return JSON.parse(decryptedJson, BufferJSON.reviver) as T;
+        } catch (decryptErr) {
+          console.error(
+            `[POSTGRES AUTH ERROR] Failed to decrypt session item "${keyId}". ` +
+            `Verify that WHATSAPP_SESSION_ENCRYPTION_KEY matches the key used during pairing! ` +
+            `Error: ${decryptErr instanceof Error ? decryptErr.message : decryptErr}`
+          );
+          return null;
+        }
       }
-    } catch {
+    } catch (err) {
       // In-memory fallback
       const inMemory = memorySessionStore.get(`${sessionId}:${keyId}`);
       if (inMemory) {
-        const decryptedJson = decryptSessionData(inMemory, key);
-        return JSON.parse(decryptedJson, BufferJSON.reviver) as T;
+        try {
+          const decryptedJson = decryptSessionData(inMemory, key);
+          return JSON.parse(decryptedJson, BufferJSON.reviver) as T;
+        } catch {
+          return null;
+        }
+      }
+      if (!process.env.VITEST) {
+        console.error(`[POSTGRES AUTH ERROR] Failed to read "${keyId}" from PostgreSQL:`, err instanceof Error ? err.message : err);
       }
     }
     return null;
@@ -67,9 +117,13 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
          DO UPDATE SET ciphertext = EXCLUDED.ciphertext, iv = EXCLUDED.iv, tag = EXCLUDED.tag, updated_at = now()`,
         [sessionId, keyId, encrypted.ciphertext, encrypted.iv, encrypted.tag]
       );
-    } catch {
+    } catch (err) {
       // In-memory fallback
       memorySessionStore.set(`${sessionId}:${keyId}`, encrypted);
+      if (!process.env.VITEST) {
+        console.error(`[POSTGRES AUTH ERROR] CRITICAL: Failed to write "${keyId}" to PostgreSQL:`, err instanceof Error ? err.message : err);
+        throw err;
+      }
     }
   }
 
@@ -101,7 +155,10 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
       await Promise.all(
         ids.map(async (id) => {
           const keyId = `${type}:${id}`;
-          const value = await readItem<SignalDataTypeMap[T]>(keyId);
+          let value = await readItem<SignalDataTypeMap[T]>(keyId);
+          if (type === "app-state-sync-key" && value) {
+            value = (proto.Message.AppStateSyncKeyData.fromObject(value as any) as unknown) as SignalDataTypeMap[T];
+          }
           if (value !== null && value !== undefined) {
             data[id] = value;
           }
@@ -169,4 +226,3 @@ export {
 export function clearMemoryAuthStateStore(): void {
   memorySessionStore.clear();
 }
-
