@@ -1,112 +1,154 @@
-# Guía de Configuración y Puesta en Marcha: Bot de WhatsApp (Mónica)
+# Guía de Puesta en Marcha: Bot de WhatsApp con Baileys (Worker Dedicado)
 
-Esta guía detalla los pasos exactos para conectar el bot de WhatsApp de **La Casa del Kioskero** con la **WhatsApp Cloud API oficial de Meta** y el backend desplegado en **Railway**.
-
----
-
-## 1. Prerrequisitos en Meta Developers
-
-1. Ingresar a [Meta for Developers](https://developers.facebook.com/) con la cuenta comercial de Facebook/Meta Business.
-2. Ir a **Mis Apps (My Apps)** y seleccionar **Crear App (Create App)**.
-   - Tipo de app: **Otro (Other)** $\rightarrow$ **Negocios (Business)**.
-   - Nombre de la app: por ejemplo, `Kioskero WhatsApp Bot`.
-3. En el panel de la aplicación, buscar el producto **WhatsApp** y hacer clic en **Configurar (Set up)**.
+Esta guía documenta la arquitectura, configuración, vinculación y despliegue del bot de WhatsApp para **La Casa del Kioskero** utilizando **Baileys** y persistencia autenticada en **PostgreSQL**.
 
 ---
 
-## 2. Obtención de Credenciales de Meta
+## 1. Arquitectura del Sistema
 
-Dentro de la sección de WhatsApp en el panel de Meta:
+```mermaid
+graph TD
+  User([Mónica / WhatsApp]) <-->|WhatsApp WebSocket| Worker[Worker Dedicado: Baileys<br/>node scripts/whatsapp-daemon.mjs]
+  Worker <-->|Advisory Lock & Encrypted Session AES-256-GCM| Postgres[(PostgreSQL)]
+  Worker -->|Consultas Solo Lectura: Stock, Pedidos, Reposición| Queries[Servicios de Negocio Monica]
+  NextJS[Servicio Web Next.js<br/>npm run start] <--> Postgres
+  Admin([Administrador]) <-->|Sesión Web Protegida /api/admin/whatsapp/pairing| NextJS
+```
 
-### A. Identificador del Número de Teléfono (`WHATSAPP_PHONE_NUMBER_ID`)
-- Ir a **WhatsApp > Configuración de la API (API Setup)**.
-- En el menú desplegable seleccionar el número telefónico que responderá los mensajes.
-- Copiar el valor numérico del campo **Identificador de número de teléfono** (ej. `102938475610293`).
-
-### B. Token de Acceso Permanente (`WHATSAPP_ACCESS_TOKEN`)
-*Nota: El token temporal de prueba vence cada 24 horas. Para producción se debe crear un System User.*
-1. Ir al **Meta Business Manager** (Configuración del negocio).
-2. En el menú lateral: **Usuarios > Usuarios del sistema (System Users)** $\rightarrow$ **Agregar**.
-3. Asignarle rol de Empleado o Administrador y nombre (ej. `bot-kioskero-service`).
-4. En **Activos asignados**, agregar la cuenta de WhatsApp con control total.
-5. Hacer clic en **Generar nuevo token (Generate Token)**:
-   - Seleccionar la App creada.
-   - Marcar los permisos:
-     - `whatsapp_business_messaging`
-     - `whatsapp_business_management`
-   - Vigencia: **Nunca expira (Permanent)**.
-6. Copiar el token generado.
-
-### C. Secreto de la Aplicación (`WHATSAPP_APP_SECRET`)
-- En el menú lateral izquierdo: **Configuración de la app > Básica**.
-- En el campo **Clave secreta de la app (App Secret)**, hacer clic en "Mostrar" y copiar el valor alfanumérico.
+- **Servicio Web Next.js:** Continúa funcionando de forma independiente sin alteraciones en su autenticación ni en su comando de inicio (`npm run start`).
+- **Servicio Worker Dedicado:** Proceso independiente ejecutado mediante `node scripts/whatsapp-daemon.mjs`, con 1 sola réplica.
+- **Persistencia en PostgreSQL (`whatsapp_baileys_session`):** Credenciales de WhatsApp y llaves Signal cifradas con AES-256-GCM authenticated encryption.
+- **Candado de Asesoramiento (`pg_try_advisory_lock`):** Evita colisiones de sesión y desconexiones de WhatsApp (código de error 440) asegurando que solo un contenedor mantenga el socket activo.
+- **Solo Lectura Estricto:** El bot no modifica pedidos, stock ni catálogos.
 
 ---
 
-## 3. Configuración de Variables de Entorno en Railway
+## 2. Variables de Entorno
 
-Ingresar al proyecto en [Railway Dashboard](https://railway.app/), entrar al servicio web de `kioskeroappweb` y en la pestaña **Variables** agregar:
+En Railway, configurar las siguientes variables en el servicio **Worker** (y en el servicio Web para la ruta de administración):
 
-| Variable | Descripción | Ejemplo / Formato |
-| :--- | :--- | :--- |
-| `WHATSAPP_PHONE_NUMBER_ID` | Identificador del número de teléfono en Meta | `102938475610293` |
-| `WHATSAPP_ACCESS_TOKEN` | Token permanente generado para el System User | `EAAB...` |
-| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Cadena secreta inventada para validar el handshake | `kioskero_verify_sec_99a8b7` |
-| `WHATSAPP_APP_SECRET` | Secreto de la aplicación Meta | `4a8f9c...` |
-| `WHATSAPP_ALLOWED_NUMBERS` | Números autorizados separados por coma (E.164) | `+5491112345678, 5491187654321` |
+| Variable | Requerida | Descripción | Ejemplo / Formato |
+| :--- | :---: | :--- | :--- |
+| `DATABASE_URL` | Sí | Cadena de conexión a PostgreSQL provista por Railway | `${{Postgres.DATABASE_URL}}` |
+| `POSTGRES_SSL` | Sí | Habilita SSL para conexiones a PostgreSQL | `true` |
+| `WHATSAPP_SESSION_ENCRYPTION_KEY` | Sí | Clave criptográfica independiente (mínimo 32 bytes) para cifrar la sesión | `d5e6f7a8b9c0...` (generar con `openssl rand -hex 32`) |
+| `WHATSAPP_PAIRING_NUMBER` | Opcional | Número de teléfono de la línea del bot para solicitar código de vinculación de 8 dígitos | `5491112345678` |
+| `WHATSAPP_ALLOWED_NUMBERS` | Sí | Lista de números autorizados separados por coma (formato E.164). Solo estos remitentes pueden realizar consultas de negocio. | `+5491112345678, +5491187654321` |
+| `LOG_LEVEL` | Opcional | Nivel de detalle de logs en consola (`info`, `warn`, `error`) | `info` |
 
 > [!IMPORTANT]
-> Los números en `WHATSAPP_ALLOWED_NUMBERS` deben incluir el código de país `54` y el prefijo móvil `9` (ejemplo para CABA: `+54911xxxxxxxx`). El sistema normaliza automáticamente variantes sin espacios ni guiones.
+> **Seguridad de la Clave de Cifrado:**  
+> La variable `WHATSAPP_SESSION_ENCRYPTION_KEY` nunca debe subirse al repositorio ni guardarse en la base de datos junto a los datos cifrados. Si se pierde esta clave, la sesión previa quedará inaccesible y será necesario revincular el bot.
 
 ---
 
-## 4. Configuración del Webhook en Meta Developers
+## 3. Migración de Base de Datos
 
-1. En el panel de Meta de la App, ir a **WhatsApp > Configuración (Configuration)**.
-2. En la sección **Webhook**, hacer clic en **Editar (Edit)**:
-   - **URL de devolución de llamada (Callback URL):**  
-     `https://kioskeroappweb.up.railway.app/api/whatsapp/webhook`
-   - **Identificador de verificación (Verify Token):**  
-     El mismo texto configurado en `WHATSAPP_WEBHOOK_VERIFY_TOKEN` en Railway.
-3. Hacer clic en **Verificar y guardar (Verify and save)**.  
-   *(Meta enviará un GET de prueba; si el token coincide, confirmará con tilde verde).*
-4. En **Campos de webhook (Webhook fields)**, hacer clic en **Administrar (Manage)** y marcar:
-   - `messages` $\rightarrow$ **Suscribirse (Subscribe)**.
+Las migraciones necesarias se encuentran en:
+- `migrations/016_whatsapp_bot.sql`: Tablas `whatsapp_processed_messages` y `whatsapp_authorized_numbers`.
+- `migrations/017_baileys_session.sql`: Tabla `whatsapp_baileys_session` con índice por `(session_id, key_id)`.
 
----
-
-## 5. Migración Automática de Base de Datos
-
-El archivo de migración [`migrations/016_whatsapp_bot.sql`](file:///c:/Renderbyte/Monica/migrations/016_whatsapp_bot.sql) ya se encuentra preparado en el repositorio.
-
-Cuando se despliegue a Railway, el comando configurado en `railway.toml`:
-```toml
-preDeployCommand = "npm run db:migrate"
+Las migraciones se ejecutan de manera estándar mediante:
+```bash
+npm run db:migrate
 ```
-ejecutará automáticamente la migración, creando las tablas:
-- `whatsapp_processed_messages`: para deduplicación atómica y auditoría.
-- `whatsapp_authorized_numbers`: para persistencia opcional de números autorizados.
 
 ---
 
-## 6. Procedimiento de Prueba Inicial con Mónica
+## 4. Despliegue en Railway (Segundo Servicio: Worker)
 
-1. **Prueba de Bienvenida:**
-   - Desde el número de Mónica configurado en `WHATSAPP_ALLOWED_NUMBERS`, enviar:  
-     `Hola`
-   - El bot debe responder saludando por su nombre con el menú de opciones.
-2. **Prueba de Consulta de Stock:**
-   - Enviar: `Stock alfajor havanna`
-   - El bot responderá con el stock discriminado en Centro, Jardín y Depósito Central (indicando fecha del Excel).
-3. **Prueba de Pedidos:**
-   - Enviar: `¿Qué pedidos siguen pendientes?`
-   - Enviar: `Pedido #3` (para ver el detalle de ítems, estado y cantidades de un pedido).
-4. **Prueba de Reposición:**
-   - Enviar: `Reposición Centro`
-   - El bot mostrará los productos con sugerencia de reposición basada en demanda histórica YoY.
-5. **Prueba de Resumen Histórico:**
-   - Enviar: `¿Qué pasó durante septiembre?` o `Resumen este mes`
-   - El bot devolverá unidades netas vendidas, movimientos y variación porcentual.
-6. **Prueba de Seguridad (Número No Autorizado):**
-   - Enviar un mensaje desde cualquier número no incluido en la lista.
-   - El bot responderá con un aviso de acceso restringido sin revelar datos del negocio.
+El repositorio soporta el servicio web existente y el nuevo servicio Worker en paralelo sobre el mismo proyecto y base de datos:
+
+### Paso 1: Crear el servicio Worker en Railway
+1. Ingresar al proyecto en [Railway Dashboard](https://railway.app/).
+2. Hacer clic en **+ New** > **GitHub Repo**.
+3. Seleccionar el repositorio `Joel010999/kioskeroappweb`.
+4. Railway creará un segundo servicio en el mismo entorno.
+5. Renombrar el nuevo servicio a **`whatsapp-worker`** en **Settings > General > Service Name**.
+
+### Paso 2: Configurar el Comando de Inicio del Worker
+1. En el servicio `whatsapp-worker`, ir a la pestaña **Settings > Deploy**.
+2. Configurar:
+   - **Build Command:** Dejar el predeterminado (`npm run build`).
+   - **Start Command:** Ingresar exactamente:
+     ```bash
+     node scripts/whatsapp-daemon.mjs
+     ```
+
+### Paso 3: Configurar Réplicas (Single Replica)
+1. En **Settings > Deploy > Replicas**, asegurarse de que las réplicas estén configuradas en **1**.
+2. **Prevención de Conexiones Duplicadas:**  
+   El Worker adquiere automáticamente el advisory lock `7429103` en PostgreSQL. Si durante un redespliegue conviven brevemente dos contenedores, el nuevo contenedor detectará que el candado está ocupado y mostrará en sus logs:
+   ```json
+   {"level":40,"msg":"Advisory lock 7429103 is currently held by another worker instance. Standing by (retry in 5s)..."}
+   ```
+   No se conectará a WhatsApp hasta que la instancia anterior termine y libere el candado.
+
+### Paso 4: Copiar Variables de Entorno
+1. En la pestaña **Variables** de `whatsapp-worker`, agregar:
+   - `DATABASE_URL = ${{Postgres.DATABASE_URL}}`
+   - `POSTGRES_SSL = true`
+   - `WHATSAPP_SESSION_ENCRYPTION_KEY = <clave_secreta_generada>`
+   - `WHATSAPP_PAIRING_NUMBER = <numero_del_bot>`
+   - `WHATSAPP_ALLOWED_NUMBERS = <numeros_autorizados>`
+   - `LOG_LEVEL = info`
+
+---
+
+## 5. Procedimiento de Vinculación de Dispositivo
+
+Para vincular la cuenta de WhatsApp por primera vez sin exponer códigos en logs públicos ni crear endpoints vulnerables, se proporcionan dos mecanismos:
+
+### Opción A: Vinculación Local Protegida (Recomendada)
+1. En una terminal local conectada a la base de datos o mediante `railway run`:
+   ```bash
+   node scripts/whatsapp-pair.mjs 5491112345678
+   ```
+2. El script se conectará de manera interactiva y mostrará en la consola del operador:
+   ```
+   ==================================================
+   >>> CÓDIGO DE VINCULACIÓN: ABCD-1234 <<<
+   ==================================================
+   ```
+3. En el teléfono del bot, abrir WhatsApp > **Dispositivos Vinculados** > **Vincular un dispositivo** > **Vincular con el número de teléfono**.
+4. Ingresar el código de 8 dígitos.
+5. La sesión se cifrará con AES-256-GCM y se guardará automáticamente en PostgreSQL en la tabla `whatsapp_baileys_session`.
+6. El script finalizará exitosamente. El Worker en Railway ya puede iniciarse y usará esa sesión.
+
+### Opción B: Endpoint Administrativo Protegido
+1. Si el Worker está corriendo sin sesión previa, genera el código y lo guarda temporalmente cifrado en la base de datos (con TTL de 150 segundos).
+2. Un operador con sesión iniciada en la web de Mónica puede consultar:
+   ```
+   GET /api/admin/whatsapp/pairing
+   ```
+   - Si no está autenticado, la API responde `401 Unauthorized`.
+   - Si está autenticado, devuelve `{ status: "pending", code: "ABCD-1234", expiresAt: ... }`.
+3. Una vez vinculado el teléfono, el código se destruye inmediatamente.
+
+---
+
+## 6. Recuperación de Sesión y Manejo de Fallas
+
+- **Reinicio del Contenedor:** Al iniciar, el Worker lee las credenciales descifrándolas desde PostgreSQL y reconecta la sesión sin requerir nuevo código.
+- **Caída de Red / Desconexión Temporal:** Si WhatsApp desconecta el socket, el Worker reintenta con backoff exponencial manteniendo el candado.
+- **Pérdida de Conexión con PostgreSQL:** Si la conexión dedicada del advisory lock se interrumpe, el Worker cierra inmediatamente el socket de WhatsApp para evitar conflictos y no reconecta hasta revalidar el candado.
+- **Cierre de Sesión Remoto (`loggedOut`):** Si el usuario desvincula el bot desde la app móvil de WhatsApp, el Worker limpia automáticamente los registros en `whatsapp_baileys_session` y queda a la espera de una nueva vinculación.
+- **Cierre Ordenado (`SIGTERM` / `SIGINT`):** Al recibir la señal de apagado de Railway, el daemon cierra el socket de WhatsApp, libera el advisory lock en PostgreSQL y finaliza con código 0.
+
+---
+
+## 7. Consultas Disponibles para Mónica
+
+El bot mantiene el 100% de las consultas de solo lectura existentes:
+1. **Stock por Producto:** `"Stock alfajores Jorgito"` o `"Stock galletitas en jardín"`.
+2. **Alertas de Faltantes:** `"Alertas de stock"` o `"Faltantes centro"`.
+3. **Reposición Semanal:** `"Sugerencia de reposición"` o `"Reposición"`.
+4. **Detalle de Pedido:** `"Pedido 1050"` o `"Estado pedido 1024"`.
+5. **Pedidos Pendientes:** `"Pedidos pendientes"` o `"Pendientes de entrega"`.
+6. **Pedidos Recientes:** `"Últimos pedidos"` o `"Pedidos jardín"`.
+7. **Proveedores de Producto:** `"Quién provee coca cola"` o `"Proveedor alfajor havanna"`.
+8. **Productos de Proveedor:** `"Productos de Arcor"` o `"Qué le compramos a Mondelez"`.
+9. **Métricas de Período:** `"Ventas de este mes"`, `"Resumen mes pasado"`, `"Métricas"`.
+10. **Productos Más Vendidos:** `"Top productos"` o `"Más vendidos este mes"`.
+11. **Estado del Sistema:** `"Estado del sistema"` o `"Salud del sistema"`.
+12. **Ayuda y Menú:** `"Hola"`, `"Menú"` o `"Ayuda"`.

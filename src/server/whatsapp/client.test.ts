@@ -1,71 +1,45 @@
-import { describe, expect, it, vi } from "vitest";
-import { sendWhatsAppMessage } from "./client";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getActiveSender, registerActiveSender, sendWhatsAppMessage } from "./client";
 
-describe("WhatsApp Graph API Client", () => {
-  it("sends message with correct endpoint, headers and payload", async () => {
-    let capturedUrl = "";
-    let capturedOptions: any = null;
-
-    const mockFetch = vi.fn().mockImplementation(async (url, options) => {
-      capturedUrl = url;
-      capturedOptions = options;
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          messages: [{ id: "wamid.OUTBOUND_12345" }],
-        }),
-      };
-    });
-
-    const result = await sendWhatsAppMessage("+54 9 11 1234-5678", "Hola Mónica", {
-      phoneNumberId: "100200300400",
-      accessToken: "secret_token_abc",
-      fetchFn: mockFetch as any,
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.messageId).toBe("wamid.OUTBOUND_12345");
-    expect(capturedUrl).toBe("https://graph.facebook.com/v21.0/100200300400/messages");
-    expect(capturedOptions.headers["Authorization"]).toBe("Bearer secret_token_abc");
-
-    const body = JSON.parse(capturedOptions.body);
-    expect(body.to).toBe("5491112345678");
-    expect(body.text.body).toBe("Hola Mónica");
+describe("WhatsApp Message Client", () => {
+  beforeEach(() => {
+    registerActiveSender(null);
   });
 
-  it("handles missing credentials gracefully without throwing", async () => {
-    const result = await sendWhatsAppMessage("5491112345678", "Hola", {
-      phoneNumberId: "",
-      accessToken: "",
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("credentials are not configured");
+  it("returns error when no active worker is registered", async () => {
+    const res = await sendWhatsAppMessage("5491112345678", "Hola");
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("WhatsApp worker is not connected");
   });
 
-  it("handles Meta API error responses without leaking secrets", async () => {
-    const mockFetch = vi.fn().mockImplementation(async () => {
-      return {
-        ok: false,
-        status: 400,
-        json: async () => ({
-          error: {
-            message: "Recipient phone number not in allowed list during development",
-            code: 131030,
-          },
-        }),
-      };
+  it("returns error for invalid recipient number", async () => {
+    const res = await sendWhatsAppMessage("", "Hola");
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("Recipient phone number is invalid");
+  });
+
+  it("dispatches message when active sender is registered", async () => {
+    const mockSender = vi.fn().mockResolvedValue({
+      success: true,
+      messageId: "msg_baileys_123",
     });
 
-    const result = await sendWhatsAppMessage("5491112345678", "Hola", {
-      phoneNumberId: "100200300400",
-      accessToken: "secret_token_hidden",
-      fetchFn: mockFetch as any,
+    registerActiveSender(mockSender);
+    expect(getActiveSender()).toBe(mockSender);
+
+    const res = await sendWhatsAppMessage("+54 9 11 1234-5678", "Resumen de stock");
+    expect(res.success).toBe(true);
+    expect(res.messageId).toBe("msg_baileys_123");
+    expect(mockSender).toHaveBeenCalledWith("5491112345678", "Resumen de stock");
+  });
+
+  it("catches sender exceptions gracefully", async () => {
+    registerActiveSender(async () => {
+      throw new Error("Socket closed unexpectedly");
     });
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("131030");
-    expect(result.error).not.toContain("secret_token_hidden");
+    const res = await sendWhatsAppMessage("5491112345678", "Hola");
+    expect(res.success).toBe(false);
+    expect(res.error).toContain("Socket closed unexpectedly");
   });
 });

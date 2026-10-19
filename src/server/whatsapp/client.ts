@@ -1,33 +1,32 @@
 import type { SendMessageResult } from "./types";
 import { normalizePhoneNumber } from "./auth";
 
-type SendOptions = {
-  previewUrl?: boolean;
-  phoneNumberId?: string;
-  accessToken?: string;
-  fetchFn?: typeof fetch;
-};
+export type MessageSender = (to: string, text: string) => Promise<SendMessageResult>;
+
+let activeSender: MessageSender | null = null;
 
 /**
- * Sends a WhatsApp text message via Meta's WhatsApp Cloud API.
- * Safely sanitizes errors to avoid leaking tokens or secrets in logs.
+ * Registers the active WhatsApp message sender (e.g. from Baileys worker).
+ */
+export function registerActiveSender(sender: MessageSender | null): void {
+  activeSender = sender;
+}
+
+/**
+ * Returns the currently active sender, if any.
+ */
+export function getActiveSender(): MessageSender | null {
+  return activeSender;
+}
+
+/**
+ * Sends a WhatsApp message using the active transport (Baileys worker).
+ * Sanitizes inputs and formats clean result.
  */
 export async function sendWhatsAppMessage(
   to: string,
-  text: string,
-  options?: SendOptions
+  text: string
 ): Promise<SendMessageResult> {
-  const phoneNumberId = options?.phoneNumberId ?? process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const accessToken = options?.accessToken ?? process.env.WHATSAPP_ACCESS_TOKEN;
-  const fetcher = options?.fetchFn ?? fetch;
-
-  if (!phoneNumberId || !accessToken) {
-    return {
-      success: false,
-      error: "WhatsApp Cloud API credentials are not configured.",
-    };
-  }
-
   const normalizedTo = normalizePhoneNumber(to);
   if (!normalizedTo) {
     return {
@@ -36,68 +35,20 @@ export async function sendWhatsAppMessage(
     };
   }
 
-  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
-
-  const payload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to: normalizedTo,
-    type: "text",
-    text: {
-      preview_url: options?.previewUrl ?? false,
-      body: text,
-    },
-  };
-
-  try {
-    const response = await fetcher(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      let errorMessage = `Meta API error (HTTP ${response.status})`;
-      try {
-        const errorData = (await response.json()) as { error?: { message?: string; code?: number } };
-        if (errorData?.error?.message) {
-          errorMessage = `Meta API error [${errorData.error.code ?? response.status}]: ${errorData.error.message}`;
-        }
-      } catch {
-        // Body was not JSON
-      }
-
-      console.error("Failed to send WhatsApp message", {
-        status: response.status,
-        recipient: normalizedTo,
-      });
-
-      return {
-        success: false,
-        error: errorMessage,
-      };
-    }
-
-    const data = (await response.json()) as { messages?: Array<{ id: string }> };
-    const messageId = data?.messages?.[0]?.id;
-
-    return {
-      success: true,
-      messageId,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("Network or unexpected error sending WhatsApp message", {
-      recipient: normalizedTo,
-      message,
-    });
-
+  if (!activeSender) {
     return {
       success: false,
-      error: `Network failure: ${message}`,
+      error: "WhatsApp worker is not connected. Message cannot be sent.",
+    };
+  }
+
+  try {
+    return await activeSender(normalizedTo, text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown send error";
+    return {
+      success: false,
+      error: `Failed to send WhatsApp message: ${message}`,
     };
   }
 }
