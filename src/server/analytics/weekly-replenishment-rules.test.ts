@@ -90,5 +90,18 @@ describe("weekly replenishment rules", () => {
     expect(suggested).toBe(10);
     expect(requested).toBe(4);
   });
+
+  it("handles negative stock without converting to zero or inflating suggested quantity", () => {
+    const decision = weeklyDecision({
+      currentStock: -10,
+      activeWeeks: 6,
+      medianDemand: 7,
+      maxDemand: 7,
+    });
+    // Target stock must not be computed and suggested quantity must be null
+    expect(decision.status).toBe("NEGATIVE_STOCK");
+    expect(decision.targetStock).toBeNull();
+    expect(decision.suggestedQuantity).toBeNull();
+  });
 });
 

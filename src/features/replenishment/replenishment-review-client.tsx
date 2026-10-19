@@ -130,8 +130,10 @@ const supplyLabel: Record<SupplyMode, string> = {
 };
 const quickFilters: Array<[Filter, string]> = [
   ["", "Todos"],
+  ["TO_REPLENISH", "A reponer"],
   ["WITH_SUGGESTION", "Con sugerencia"],
   ["REVIEW_REQUIRED", "Revisión manual"],
+  ["NEGATIVE_STOCK", "Stock negativo"],
   ["NO_DEMAND", "Sin demanda"],
   ["DEPOT_NOT_POSITIVE", "Depósito sin stock"],
   ["SUGGESTION_EXCEEDS_DEPOT", "Sugerida > depósito"],
@@ -580,18 +582,36 @@ export function ReplenishmentReviewClient({
   const setQuantity = (item: Item, value: number) => {
     const key = requestedKey(branchId, planningDate, item.article_id);
     setRequested((current) => ({ ...current, [key]: value }));
-    setSelectedItems((current) =>
-      current[key]
-        ? {
-            ...current,
-            [key]: {
-              article_id: item.article_id,
-              requested_quantity: value,
-              supply_mode: item.supply_mode,
-            },
-          }
-        : current,
-    );
+    const isEligible =
+      item.supply_mode === "DEPOT" || item.supply_mode === "UNDEFINED";
+    if (isEligible) {
+      if (value > 0) {
+        setSelected((current) => {
+          const next = { ...current, [key]: true };
+          selectedRef.current = next;
+          return next;
+        });
+        setSelectedItems((current) => ({
+          ...current,
+          [key]: {
+            article_id: item.article_id,
+            requested_quantity: value,
+            supply_mode: item.supply_mode,
+          },
+        }));
+      } else {
+        setSelected((current) => {
+          const next = { ...current, [key]: false };
+          selectedRef.current = next;
+          return next;
+        });
+        setSelectedItems((current) => {
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      }
+    }
     setItemRegistry((current) => ({
       ...current,
       [item.article_id]: {
@@ -628,18 +648,27 @@ export function ReplenishmentReviewClient({
       delete next[key];
       return next;
     });
-    setSelectedItems((current) =>
-      current[key]
-        ? {
-            ...current,
-            [key]: {
-              article_id: item.article_id,
-              requested_quantity: sug,
-              supply_mode: item.supply_mode,
-            },
-          }
-        : current,
-    );
+    const isEligible =
+      (item.supply_mode === "DEPOT" || item.supply_mode === "UNDEFINED") &&
+      sug > 0;
+    setSelected((current) => {
+      const next = { ...current, [key]: isEligible };
+      selectedRef.current = next;
+      return next;
+    });
+    setSelectedItems((current) => {
+      const next = { ...current };
+      if (isEligible) {
+        next[key] = {
+          article_id: item.article_id,
+          requested_quantity: sug,
+          supply_mode: item.supply_mode,
+        };
+      } else {
+        delete next[key];
+      }
+      return next;
+    });
     setItemRegistry((current) => ({
       ...current,
       [item.article_id]: {
@@ -1354,8 +1383,12 @@ export function ReplenishmentReviewClient({
                     item.stock_depot !== null &&
                     item.suggested_quantity > item.stock_depot;
                   const isBulto = Boolean(item.package_units && item.package_units > 1);
+                  const isNegativeStock = item.stock_current < 0;
                   return (
-                    <tr key={item.article_id}>
+                    <tr
+                      key={item.article_id}
+                      className={isNegativeStock ? "has-negative-stock" : ""}
+                    >
                       <td data-label="Incluir">
                         <input
                           type="checkbox"
@@ -1383,6 +1416,19 @@ export function ReplenishmentReviewClient({
                             📦 {item.presentation_display || "Unidad"}
                           </span>
                         </div>
+                        {isNegativeStock && (
+                          <div
+                            className="negative-stock-alert"
+                            role="alert"
+                            data-testid={`negative-stock-alert-${item.article_id}`}
+                          >
+                            <span className="negative-stock-alert-icon">⚠️</span>
+                            <span>
+                              Stock negativo: revisá la cantidad real antes de
+                              definir el pedido
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td data-label="Presentación">
                         <span
@@ -1411,10 +1457,20 @@ export function ReplenishmentReviewClient({
                       <td
                         data-label="Stock PV"
                         className={
-                          item.stock_current < 0 ? "negative-number" : ""
+                          isNegativeStock
+                            ? "negative-number negative-stock-cell"
+                            : ""
                         }
                       >
                         {units.format(item.stock_current)}
+                        {isNegativeStock && (
+                          <small
+                            className="negative-stock-pill"
+                            title="Stock registrado menor a 0"
+                          >
+                            Negativo
+                          </small>
+                        )}
                       </td>
                       <td data-label="Demanda semanal">
                         {item.weekly_demand === null
@@ -1427,9 +1483,20 @@ export function ReplenishmentReviewClient({
                           : units.format(item.target_stock)}
                       </td>
                       <td data-label="Sugerida" className="review-suggested">
-                        {item.suggested_quantity === null
-                          ? "-"
-                          : units.format(item.suggested_quantity)}
+                        {item.suggested_quantity === null ? (
+                          isNegativeStock ? (
+                            <span
+                              className="suggested-review-tag"
+                              title="Stock negativo: definir manualmente"
+                            >
+                              Revisión manual
+                            </span>
+                          ) : (
+                            "-"
+                          )
+                        ) : (
+                          units.format(item.suggested_quantity)
+                        )}
                       </td>
                       <td data-label="Solicitada">
                         <div className="requested-control">

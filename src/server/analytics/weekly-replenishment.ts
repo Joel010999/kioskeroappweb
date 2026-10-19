@@ -94,7 +94,8 @@ const filterConditions: Record<WeeklyReplenishmentFilter, string> = {
   SUPPLY_DEPOT: "supply_mode = 'DEPOT'",
   SUPPLY_DIRECT_SUPPLIER: "supply_mode = 'DIRECT_SUPPLIER'",
   SUPPLY_UNDEFINED: "supply_mode = 'UNDEFINED'",
-  TO_REPLENISH: "status = 'SUGGESTION_AVAILABLE' AND supply_mode IN ('DEPOT', 'UNDEFINED')",
+  TO_REPLENISH:
+    "status IN ('SUGGESTION_AVAILABLE', 'NEGATIVE_STOCK') AND supply_mode IN ('DEPOT', 'UNDEFINED')",
 };
 const orderBy: Record<WeeklyReplenishmentSort, string> = {
   SUGGESTED_DESC: "suggested_quantity DESC NULLS LAST, description ASC",

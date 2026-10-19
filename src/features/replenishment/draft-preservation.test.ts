@@ -232,4 +232,56 @@ describe("Replenishment Draft & Rubro State Preservation", () => {
     expect(reloaded.requested[`${branchId}:${planningDate}:103`]).toBe(17);
     expect(Object.keys(reloaded.edited).length).toBe(0);
   });
+
+  it("preserves manual quantities for negative stock items and restores them safely to 0", () => {
+    // Negative stock item: currentStock is -5, suggested_quantity is null, initial requested is 0
+    const negKey = `${branchId}:${planningDate}:999`;
+    const draftPayload = {
+      requested: { [negKey]: 14 },
+      edited: { [negKey]: true },
+      selected: { [negKey]: true },
+      selectedItems: {
+        [negKey]: {
+          article_id: 999,
+          requested_quantity: 14,
+          supply_mode: "DEPOT" as const,
+        },
+      },
+      itemRegistry: {
+        999: {
+          article_id: 999,
+          description: "ARTICULO STOCK NEGATIVO",
+          rubro: "GOLOSINAS",
+          stock_current: -5,
+          stock_depot: 30,
+          suggested_quantity: null,
+          requested_quantity: 14,
+          supply_mode: "DEPOT" as const,
+        },
+      },
+      savedAt: Date.now(),
+    };
+
+    mockStorage[storageKey] = JSON.stringify(draftPayload);
+
+    // Verify draft reload keeps manual edit and negative stock intact
+    const restored = JSON.parse(mockStorage[storageKey]);
+    expect(restored.requested[negKey]).toBe(14);
+    expect(restored.edited[negKey]).toBe(true);
+    expect(restored.itemRegistry[999].stock_current).toBe(-5);
+
+    // When restoring suggestions, suggested_quantity is null -> requested becomes 0
+    const sug = restored.itemRegistry[999].suggested_quantity ?? 0;
+    expect(sug).toBe(0);
+    restored.requested[negKey] = sug;
+    delete restored.edited[negKey];
+    restored.selected[negKey] = false;
+    delete restored.selectedItems[negKey];
+
+    expect(restored.requested[negKey]).toBe(0);
+    expect(restored.edited[negKey]).toBeUndefined();
+    // System registered stock remains untouched
+    expect(restored.itemRegistry[999].stock_current).toBe(-5);
+  });
 });
+
