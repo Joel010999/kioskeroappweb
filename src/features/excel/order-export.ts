@@ -17,6 +17,7 @@ export type ReplenishmentExportItem = {
   package_units?: number | null;
   presentation?: string | null;
   presentation_display?: string | null;
+  selected?: boolean;
 };
 
 export type RawReplenishmentItem = {
@@ -34,7 +35,23 @@ export type RawReplenishmentItem = {
   package_units?: number | null;
   presentation?: string | null;
   presentation_display?: string | null;
+  selected?: boolean;
 };
+
+/**
+ * Regla central de exportación a Excel de reposición semanal:
+ * Un producto se exporta exclusivamente cuando se cumplen ambas condiciones:
+ * 1. El producto está seleccionado mediante su checkbox (seleccionado === true).
+ * 2. La cantidad solicitada es mayor que cero (cantidadSolicitada > 0).
+ *
+ * incluirEnExcel = seleccionado && cantidadSolicitada > 0
+ */
+export function isEligibleForReplenishmentExcel(params: {
+  selected?: boolean;
+  requestedQuantity: number;
+}): boolean {
+  return Boolean(params.selected) && params.requestedQuantity > 0;
+}
 
 export type CollectRubroExportItemsParams = {
   items: RawReplenishmentItem[];
@@ -87,15 +104,22 @@ export function collectRubroExportItems(
         ? requestedMap[key]
         : item.requested_quantity;
 
-    // 5. Selection / Destildados rule
-    const isExplicitlyChecked = selectedMap[key];
-    const isIncluded =
-      isExplicitlyChecked !== undefined ? isExplicitlyChecked : reqVal > 0;
+    // 5. Selección de producto:
+    // Si se indicó explícitamente en selectedMap, se respeta ese valor booleano.
+    // Si no fue interactuado aún (por ejemplo artículos en páginas posteriores),
+    // el valor por defecto sigue el estado del checkbox de reposición: seleccionado si reqVal > 0.
+    const isSelected =
+      selectedMap[key] !== undefined ? Boolean(selectedMap[key]) : reqVal > 0;
 
-    if (!isIncluded) continue;
-
-    // 6. Quantity rule: must be > 0
-    if (reqVal <= 0) continue;
+    // 6. Regla obligatoria: incluirEnExcel = seleccionado && cantidadSolicitada > 0
+    if (
+      !isEligibleForReplenishmentExcel({
+        selected: isSelected,
+        requestedQuantity: reqVal,
+      })
+    ) {
+      continue;
+    }
 
     result.push({
       article_id: item.article_id,
@@ -112,6 +136,7 @@ export function collectRubroExportItems(
       package_units: item.package_units,
       presentation: item.presentation,
       presentation_display: item.presentation_display,
+      selected: isSelected,
     });
   }
 
@@ -163,8 +188,17 @@ export function buildReplenishmentWorkbook(params: {
 }): xlsx.WorkBook {
   const { items, branchLabel, planningDate, title = "Reposición Semanal" } = params;
 
+  // Filtrar exclusivamente los productos que cumplen la regla:
+  // incluirEnExcel = seleccionado && cantidadSolicitada > 0
+  const eligibleItems = items.filter((item) =>
+    isEligibleForReplenishmentExcel({
+      selected: item.selected !== false,
+      requestedQuantity: item.requested_quantity ?? 0,
+    }),
+  );
+
   // Ordenar items por Rubro (A a Z, "Sin rubro" al final) y luego por Producto (A a Z)
-  const sortedItems = [...items].sort((a, b) =>
+  const sortedItems = [...eligibleItems].sort((a, b) =>
     compareByRubroAndProduct(
       {
         rubro: resolveRubroName(a.classification_code, a.rubro),

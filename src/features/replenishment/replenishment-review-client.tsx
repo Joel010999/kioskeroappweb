@@ -9,6 +9,7 @@ import {
 import {
   collectRubroExportItems,
   downloadReplenishmentExcel,
+  isEligibleForReplenishmentExcel,
   type ReplenishmentExportItem,
 } from "@/features/excel/order-export";
 import { isSinRubro } from "@/server/catalog/rubros";
@@ -977,10 +978,15 @@ export function ReplenishmentReviewClient({
               unit_measure: meta?.unit_measure ?? "UN",
               package_units: meta?.package_units ?? null,
               presentation: meta?.presentation,
-              presentation_display: meta?.presentation_display,
+              selected: true,
             };
           })
-          .filter((item) => item.requested_quantity > 0);
+          .filter((item) =>
+            isEligibleForReplenishmentExcel({
+              selected: true,
+              requestedQuantity: item.requested_quantity,
+            }),
+          );
 
         if (exportList.length === 0) {
           alert("No hay productos con cantidad solicitada mayor a 0 para exportar.");

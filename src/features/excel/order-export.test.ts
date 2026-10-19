@@ -5,6 +5,7 @@ import {
   buildOrderWorkbook,
   resolveBranchStockHeader,
   collectRubroExportItems,
+  isEligibleForReplenishmentExcel,
   type ReplenishmentExportItem,
   type OrderExportItem,
   type RawReplenishmentItem,
@@ -784,6 +785,372 @@ describe("Excel Export Module", () => {
       expect(dataRows.length).toBe(75);
     });
   });
+
+  describe("Regla obligatoria de exportación a Excel: incluirEnExcel = seleccionado && cantidadSolicitada > 0", () => {
+    const branchId = "2";
+    const planningDate = "2026-10-24";
+
+    it("1. Un producto seleccionado con cantidad 5 se exporta", () => {
+      // Regla lógica pura
+      expect(
+        isEligibleForReplenishmentExcel({ selected: true, requestedQuantity: 5 }),
+      ).toBe(true);
+
+      const item: RawReplenishmentItem = {
+        article_id: 5001,
+        description: "CHOCOLATE 5001",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 10,
+        stock_depot: 50,
+        suggested_quantity: 5,
+        requested_quantity: 5,
+        supply_mode: "DEPOT",
+      };
+
+      const key = `${branchId}:${planningDate}:5001`;
+      const exported = collectRubroExportItems({
+        items: [item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap: { [key]: 5 },
+        selectedMap: { [key]: true },
+      });
+
+      expect(exported).toHaveLength(1);
+      expect(exported[0].article_id).toBe(5001);
+      expect(exported[0].requested_quantity).toBe(5);
+
+      const wb = buildReplenishmentWorkbook({
+        items: exported,
+        branchLabel: "Centro",
+        planningDate,
+      });
+      const ws = wb.Sheets["Reposición"];
+      const rows = xlsx.utils.sheet_to_json<any[]>(ws, { header: 1 });
+      const productRow = rows.find((r) => r[0] === 5001);
+      expect(productRow).toBeDefined();
+      expect(productRow?.[8]).toBe(5); // Solicitada
+    });
+
+    it("2. Un producto seleccionado con cantidad 0 no se exporta", () => {
+      expect(
+        isEligibleForReplenishmentExcel({ selected: true, requestedQuantity: 0 }),
+      ).toBe(false);
+
+      const item: RawReplenishmentItem = {
+        article_id: 5002,
+        description: "CHOCOLATE 5002",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 10,
+        stock_depot: 50,
+        suggested_quantity: 5,
+        requested_quantity: 5,
+        supply_mode: "DEPOT",
+      };
+
+      const key = `${branchId}:${planningDate}:5002`;
+      const exported = collectRubroExportItems({
+        items: [item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap: { [key]: 0 }, // Operator defined 0
+        selectedMap: { [key]: true }, // Even if checked
+      });
+
+      expect(exported).toHaveLength(0);
+
+      // Even if passed to buildReplenishmentWorkbook, it gets filtered out
+      const wb = buildReplenishmentWorkbook({
+        items: [
+          {
+            article_id: 5002,
+            description: "CHOCOLATE 5002",
+            rubro: "CHOCOLATES",
+            stock_current: 10,
+            stock_depot: 50,
+            suggested_quantity: 5,
+            requested_quantity: 0,
+            supply_mode: "DEPOT",
+            selected: true,
+          },
+        ],
+        branchLabel: "Centro",
+        planningDate,
+      });
+      const ws = wb.Sheets["Reposición"];
+      const rows = xlsx.utils.sheet_to_json<any[]>(ws, { header: 1 });
+      const productRow = rows.find((r) => r[0] === 5002);
+      expect(productRow).toBeUndefined();
+    });
+
+    it("3. Un producto destildado con cantidad 5 no se exporta", () => {
+      expect(
+        isEligibleForReplenishmentExcel({ selected: false, requestedQuantity: 5 }),
+      ).toBe(false);
+
+      const item: RawReplenishmentItem = {
+        article_id: 5003,
+        description: "CHOCOLATE 5003",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 10,
+        stock_depot: 50,
+        suggested_quantity: 5,
+        requested_quantity: 5,
+        supply_mode: "DEPOT",
+      };
+
+      const key = `${branchId}:${planningDate}:5003`;
+      const exported = collectRubroExportItems({
+        items: [item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap: { [key]: 5 },
+        selectedMap: { [key]: false }, // Unchecked by user
+      });
+
+      expect(exported).toHaveLength(0);
+
+      const wb = buildReplenishmentWorkbook({
+        items: [
+          {
+            article_id: 5003,
+            description: "CHOCOLATE 5003",
+            rubro: "CHOCOLATES",
+            stock_current: 10,
+            stock_depot: 50,
+            suggested_quantity: 5,
+            requested_quantity: 5,
+            supply_mode: "DEPOT",
+            selected: false,
+          },
+        ],
+        branchLabel: "Centro",
+        planningDate,
+      });
+      const ws = wb.Sheets["Reposición"];
+      const rows = xlsx.utils.sheet_to_json<any[]>(ws, { header: 1 });
+      const productRow = rows.find((r) => r[0] === 5003);
+      expect(productRow).toBeUndefined();
+    });
+
+    it("4. Un producto destildado con cantidad 0 no se exporta", () => {
+      expect(
+        isEligibleForReplenishmentExcel({ selected: false, requestedQuantity: 0 }),
+      ).toBe(false);
+
+      const item: RawReplenishmentItem = {
+        article_id: 5004,
+        description: "CHOCOLATE 5004",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 10,
+        stock_depot: 50,
+        suggested_quantity: 0,
+        requested_quantity: 0,
+        supply_mode: "DEPOT",
+      };
+
+      const key = `${branchId}:${planningDate}:5004`;
+      const exported = collectRubroExportItems({
+        items: [item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap: { [key]: 0 },
+        selectedMap: { [key]: false },
+      });
+
+      expect(exported).toHaveLength(0);
+    });
+
+    it("5. Un producto con stock negativo seleccionado y con cantidad manual 5 se exporta", () => {
+      expect(
+        isEligibleForReplenishmentExcel({ selected: true, requestedQuantity: 5 }),
+      ).toBe(true);
+
+      const item: RawReplenishmentItem = {
+        article_id: 5005,
+        description: "CHOCOLATE STOCK NEGATIVO",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: -8, // Negative stock
+        stock_depot: 40,
+        suggested_quantity: null,
+        requested_quantity: 0,
+        supply_mode: "DEPOT",
+      };
+
+      const key = `${branchId}:${planningDate}:5005`;
+      const exported = collectRubroExportItems({
+        items: [item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap: { [key]: 5 }, // Client decided 5
+        selectedMap: { [key]: true }, // Selected
+      });
+
+      expect(exported).toHaveLength(1);
+      expect(exported[0].article_id).toBe(5005);
+      expect(exported[0].stock_current).toBe(-8); // Real negative stock preserved
+      expect(exported[0].requested_quantity).toBe(5);
+
+      const wb = buildReplenishmentWorkbook({
+        items: exported,
+        branchLabel: "Centro",
+        planningDate,
+      });
+      const ws = wb.Sheets["Reposición"];
+      const rows = xlsx.utils.sheet_to_json<any[]>(ws, { header: 1 });
+      const productRow = rows.find((r) => r[0] === 5005);
+      expect(productRow).toBeDefined();
+      expect(productRow?.[5]).toBe(-8); // Stock Central = -8
+      expect(productRow?.[8]).toBe(5);  // Solicitada = 5
+    });
+
+    it("6. Un producto con stock negativo y cantidad 0 no se exporta", () => {
+      expect(
+        isEligibleForReplenishmentExcel({ selected: true, requestedQuantity: 0 }),
+      ).toBe(false);
+      expect(
+        isEligibleForReplenishmentExcel({ selected: false, requestedQuantity: 0 }),
+      ).toBe(false);
+
+      const item: RawReplenishmentItem = {
+        article_id: 5006,
+        description: "CHOCOLATE STOCK NEGATIVO CERO",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: -4,
+        stock_depot: 30,
+        suggested_quantity: null,
+        requested_quantity: 0,
+        supply_mode: "DEPOT",
+      };
+
+      const key = `${branchId}:${planningDate}:5006`;
+      // Even if selectedMap has true, quantity 0 excludes it
+      const exported = collectRubroExportItems({
+        items: [item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap: { [key]: 0 },
+        selectedMap: { [key]: true },
+      });
+
+      expect(exported).toHaveLength(0);
+    });
+
+    it("7. Se exportan todos los productos elegibles del rubro, incluso si están distribuidos en varias páginas", () => {
+      // Page 1: 50 items (ids 6001 to 6050)
+      const page1: RawReplenishmentItem[] = Array.from({ length: 50 }, (_, i) => ({
+        article_id: 6001 + i,
+        description: `CHOCOLATE PAG1 #${i + 1}`,
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 2,
+        stock_depot: 100,
+        suggested_quantity: 10,
+        requested_quantity: 10,
+        supply_mode: "DEPOT",
+      }));
+
+      // Page 2: 25 items (ids 6051 to 6075)
+      const page2: RawReplenishmentItem[] = Array.from({ length: 25 }, (_, i) => ({
+        article_id: 6051 + i,
+        description: `CHOCOLATE PAG2 #${i + 1}`,
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 3,
+        stock_depot: 80,
+        suggested_quantity: 8,
+        requested_quantity: 8,
+        supply_mode: "DEPOT",
+      }));
+
+      // In page 1: item 6001 is uncheck by operator (selected = false)
+      // item 6002 is set to 0 by operator (requested = 0)
+      const selectedMap: Record<string, boolean> = {
+        [`${branchId}:${planningDate}:6001`]: false,
+      };
+      const requestedMap: Record<string, number> = {
+        [`${branchId}:${planningDate}:6002`]: 0,
+      };
+
+      // In page 2: item 6051 is unchecked by operator
+      selectedMap[`${branchId}:${planningDate}:6051`] = false;
+
+      const allItems = [...page1, ...page2]; // 75 items total
+      const exported = collectRubroExportItems({
+        items: allItems,
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap,
+        selectedMap,
+      });
+
+      // 75 total minus 3 excluded (6001 unchecked, 6002 qty 0, 6051 unchecked) = 72 exported
+      expect(exported).toHaveLength(72);
+      expect(exported.find((i) => i.article_id === 6001)).toBeUndefined();
+      expect(exported.find((i) => i.article_id === 6002)).toBeUndefined();
+      expect(exported.find((i) => i.article_id === 6051)).toBeUndefined();
+
+      // Verify items from both page 1 and page 2 are present
+      expect(exported.find((i) => i.article_id === 6003)).toBeDefined();
+      expect(exported.find((i) => i.article_id === 6075)).toBeDefined();
+    });
+
+    it("8. Las demás funcionalidades de exportación existentes siguen funcionando", () => {
+      // Deduplication test
+      const item: RawReplenishmentItem = {
+        article_id: 7001,
+        description: "DUPLICATED CHOC",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 5,
+        stock_depot: 20,
+        suggested_quantity: 12,
+        requested_quantity: 12,
+        supply_mode: "DEPOT",
+      };
+      const exported = collectRubroExportItems({
+        items: [item, { ...item }],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+      });
+      expect(exported).toHaveLength(1);
+
+      // Direct supplier exclusion
+      const directItem: RawReplenishmentItem = {
+        article_id: 7002,
+        description: "DIRECT SUPPLIER CHOC",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 5,
+        stock_depot: null,
+        suggested_quantity: 12,
+        requested_quantity: 12,
+        supply_mode: "DIRECT_SUPPLIER",
+      };
+      const exportedDirect = collectRubroExportItems({
+        items: [directItem],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+      });
+      expect(exportedDirect).toHaveLength(0);
+    });
+  });
 });
+
 
 
