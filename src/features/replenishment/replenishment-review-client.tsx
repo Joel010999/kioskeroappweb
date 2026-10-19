@@ -7,6 +7,7 @@ import {
   OperationsNavigation,
 } from "@/features/navigation/operations-navigation";
 import {
+  collectRubroExportItems,
   downloadReplenishmentExcel,
   type ReplenishmentExportItem,
 } from "@/features/excel/order-export";
@@ -240,6 +241,7 @@ export function ReplenishmentReviewClient({
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showRestoreAllModal, setShowRestoreAllModal] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
 
   const [requested, setRequested] = useState<Record<string, number>>(() => {
@@ -844,69 +846,130 @@ export function ReplenishmentReviewClient({
     }
   };
 
-  const handleExport = (mode: "selected" | "visible") => {
-    if (mode === "selected") {
-      const exportList: ReplenishmentExportItem[] = globalSelections
-        .map((sel) => {
-          const meta = itemRegistry[sel.article_id];
-          return {
-            article_id: sel.article_id,
-            description: meta?.description ?? `Artículo ${sel.article_id}`,
-            rubro: meta?.rubro ?? meta?.classification_code ?? "Sin rubro",
-            classification_code: meta?.classification_code ?? null,
-            stock_current: meta?.stock_current ?? 0,
-            stock_depot: meta?.stock_depot ?? null,
-            suggested_quantity: meta?.suggested_quantity ?? null,
-            requested_quantity: sel.requested_quantity,
-            supply_mode: sel.supply_mode,
-            supplier_code: meta?.supplier_code ?? null,
-            unit_measure: meta?.unit_measure ?? "UN",
-            package_units: meta?.package_units ?? null,
-            presentation: meta?.presentation,
-            presentation_display: meta?.presentation_display,
-          };
-        })
-        .filter((item) => item.requested_quantity > 0);
+  const handleExport = async (mode: "selected" | "rubro" | "visible") => {
+    if (!data) return;
+    setExporting(true);
 
-      if (exportList.length === 0) {
-        alert("No hay productos con cantidad solicitada mayor a 0 para exportar.");
-        return;
+    try {
+      if (mode === "rubro" || mode === "visible") {
+        const currentRubro = rubro;
+        let allItems: Item[] = [];
+
+        // If data.total <= data.items.length and on page 1, the currently loaded data already contains all items
+        if (data.total <= data.items.length && data.page === 1) {
+          allItems = data.items;
+        } else {
+          // Fetch all pages with page_size=100 concurrently
+          const pageSize = 100;
+          const totalPages = Math.ceil(data.total / pageSize);
+          const promises = [];
+
+          for (let p = 1; p <= totalPages; p++) {
+            const params = new URLSearchParams({
+              branch_id: branchId,
+              planning_date: planningDate,
+              page: String(p),
+              page_size: String(pageSize),
+              sort,
+            });
+            if (filter) params.set("filter", filter);
+            if (search) params.set("search", search);
+            if (rubro) params.set("rubro", rubro);
+            if (supplier) params.set("supplier", supplier);
+
+            promises.push(
+              fetch(`/api/replenishment/weekly?${params.toString()}`)
+                .then((res) => {
+                  if (!res.ok)
+                    throw new Error("Error al consultar productos para exportar");
+                  return res.json();
+                })
+                .then((json) => (json.items as Item[]) || []),
+            );
+          }
+
+          const results = await Promise.all(promises);
+          for (const pageItems of results) {
+            allItems.push(...pageItems);
+          }
+        }
+
+        const exportList = collectRubroExportItems({
+          items: allItems,
+          branchId,
+          planningDate,
+          targetRubro: currentRubro || null,
+          requestedMap: requested,
+          selectedMap: selected,
+        });
+
+        if (exportList.length === 0) {
+          alert(
+            currentRubro
+              ? `No hay productos seleccionados con cantidad mayor a 0 para exportar en el rubro ${isSinRubro(currentRubro) ? "Sin rubro" : currentRubro}.`
+              : "No hay productos seleccionados con cantidad mayor a 0 para exportar.",
+          );
+          return;
+        }
+
+        const cleanRubro = currentRubro
+          ? isSinRubro(currentRubro)
+            ? "SIN_RUBRO"
+            : currentRubro.replace(/\s+/g, "_")
+          : "COMPLETO";
+        const cleanBranch = branchName.replace(/\s+/g, "_");
+
+        downloadReplenishmentExcel({
+          items: exportList,
+          branchLabel: branchName,
+          planningDate,
+          title: currentRubro
+            ? `Pedido a Depósito - ${isSinRubro(currentRubro) ? "Sin rubro" : currentRubro}`
+            : "Pedido a Depósito Filtrado",
+          filename: `REPOSICION_${cleanRubro}_${cleanBranch}_${planningDate}.xlsx`,
+        });
+      } else if (mode === "selected") {
+        const exportList: ReplenishmentExportItem[] = globalSelections
+          .map((sel) => {
+            const meta = itemRegistry[sel.article_id];
+            return {
+              article_id: sel.article_id,
+              description: meta?.description ?? `Artículo ${sel.article_id}`,
+              rubro: meta?.rubro ?? meta?.classification_code ?? "Sin rubro",
+              classification_code: meta?.classification_code ?? null,
+              stock_current: meta?.stock_current ?? 0,
+              stock_depot: meta?.stock_depot ?? null,
+              suggested_quantity: meta?.suggested_quantity ?? null,
+              requested_quantity: sel.requested_quantity,
+              supply_mode: sel.supply_mode,
+              supplier_code: meta?.supplier_code ?? null,
+              unit_measure: meta?.unit_measure ?? "UN",
+              package_units: meta?.package_units ?? null,
+              presentation: meta?.presentation,
+              presentation_display: meta?.presentation_display,
+            };
+          })
+          .filter((item) => item.requested_quantity > 0);
+
+        if (exportList.length === 0) {
+          alert("No hay productos con cantidad solicitada mayor a 0 para exportar.");
+          return;
+        }
+
+        downloadReplenishmentExcel({
+          items: exportList,
+          branchLabel: branchName,
+          planningDate,
+          title: "Pedido a Depósito Completo",
+          filename: `PEDIDO_COMPLETO_${branchName.replace(/\s+/g, "_")}_${planningDate}.xlsx`,
+        });
       }
-
-      downloadReplenishmentExcel({
-        items: exportList,
-        branchLabel: branchName,
-        planningDate,
-        title: "Pedido a Depósito Completo",
-        filename: `PEDIDO_COMPLETO_${branchName.replace(/\s+/g, "_")}_${planningDate}.xlsx`,
-      });
-    } else if (mode === "visible" && data) {
-      const exportList: ReplenishmentExportItem[] = data.items.map((item) => ({
-        article_id: item.article_id,
-        description: item.description,
-        rubro: item.rubro ?? item.classification_code ?? "Sin rubro",
-        classification_code: item.classification_code,
-        stock_current: item.stock_current,
-        stock_depot: item.stock_depot,
-        suggested_quantity: item.suggested_quantity,
-        requested_quantity: valueFor(item),
-        supply_mode: item.supply_mode,
-        supplier_code: item.supplier_code,
-        unit_measure: item.unit_measure,
-        package_units: item.package_units,
-        presentation: item.presentation,
-        presentation_display: item.presentation_display,
-      }));
-
-      downloadReplenishmentExcel({
-        items: exportList,
-        branchLabel: branchName,
-        planningDate,
-        title: `Productos Filtrados (${rubro || "Todos los rubros"})`,
-        filename: `REPOSICION_FILTRADA_${branchName.replace(/\s+/g, "_")}_${planningDate}.xlsx`,
-      });
+      setShowExportModal(false);
+    } catch (err) {
+      alert("Ocurrió un error al exportar a Excel: " + (err as Error).message);
+    } finally {
+      setExporting(false);
     }
-    setShowExportModal(false);
   };
 
   return (
@@ -1456,7 +1519,7 @@ export function ReplenishmentReviewClient({
       {showExportModal && (
         <div
           className="export-modal-backdrop"
-          onClick={() => setShowExportModal(false)}
+          onClick={() => !exporting && setShowExportModal(false)}
         >
           <div
             className="export-modal-card"
@@ -1473,33 +1536,75 @@ export function ReplenishmentReviewClient({
               </p>
             </div>
             <div className="export-modal-options">
-              <button
-                type="button"
-                className="export-option-btn"
-                onClick={() => handleExport("selected")}
-              >
-                <strong>
-                  1. Exportar pedido completo (Recomendado)
-                </strong>
-                <span>
-                  Incluye todos los <strong>{globalSelections.length} productos</strong> marcados para depósito ({units.format(globalSelections.reduce((sum, item) => sum + item.requested_quantity, 0))} unidades totales), sin importar el rubro o página actual.
-                </span>
-              </button>
-              <button
-                type="button"
-                className="export-option-btn"
-                onClick={() => handleExport("visible")}
-              >
-                <strong>2. Exportar productos filtrados de esta vista</strong>
-                <span>
-                  Exporta únicamente los {data?.items.length ?? 0} artículos visibles actualmente con el filtro o rubro activo.
-                </span>
-              </button>
+              {rubro ? (
+                <button
+                  type="button"
+                  className="export-option-btn"
+                  disabled={exporting}
+                  onClick={() => void handleExport("rubro")}
+                >
+                  <strong>
+                    {exporting
+                      ? "⏳ Exportando rubro completo..."
+                      : `1. Exportar rubro «${isSinRubro(rubro) ? "Sin rubro" : rubro}» completo (Recomendado)`}
+                  </strong>
+                  <span>
+                    Incluye todos los productos seleccionados de este rubro a lo largo de todas sus páginas ({data ? units.format(data.total) : "..."} productos en total), respetando tus cantidades solicitadas y excluyendo los destildados.
+                  </span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="export-option-btn"
+                  disabled={exporting}
+                  onClick={() => void handleExport("selected")}
+                >
+                  <strong>
+                    {exporting
+                      ? "⏳ Exportando..."
+                      : "1. Exportar pedido completo (Recomendado)"}
+                  </strong>
+                  <span>
+                    Incluye todos los <strong>{globalSelections.length} productos</strong> marcados para depósito ({units.format(globalSelections.reduce((sum, item) => sum + item.requested_quantity, 0))} unidades totales), sin importar el rubro o página actual.
+                  </span>
+                </button>
+              )}
+
+              {rubro ? (
+                <button
+                  type="button"
+                  className="export-option-btn"
+                  disabled={exporting}
+                  onClick={() => void handleExport("selected")}
+                >
+                  <strong>2. Exportar pedido general (Todos los rubros)</strong>
+                  <span>
+                    Exporta todos los <strong>{globalSelections.length} productos</strong> marcados para el pedido general de la sucursal, no solo los de {isSinRubro(rubro) ? "Sin rubro" : rubro}.
+                  </span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="export-option-btn"
+                  disabled={exporting}
+                  onClick={() => void handleExport("visible")}
+                >
+                  <strong>
+                    {exporting
+                      ? "⏳ Exportando..."
+                      : "2. Exportar productos filtrados de esta vista"}
+                  </strong>
+                  <span>
+                    Exporta todos los artículos con el filtro activo a lo largo de todas sus páginas ({data ? units.format(data.total) : 0} productos en total).
+                  </span>
+                </button>
+              )}
             </div>
             <div className="export-modal-footer">
               <button
                 type="button"
                 className="order-secondary"
+                disabled={exporting}
                 onClick={() => setShowExportModal(false)}
               >
                 Cancelar

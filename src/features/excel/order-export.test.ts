@@ -4,8 +4,10 @@ import {
   buildReplenishmentWorkbook,
   buildOrderWorkbook,
   resolveBranchStockHeader,
+  collectRubroExportItems,
   type ReplenishmentExportItem,
   type OrderExportItem,
+  type RawReplenishmentItem,
 } from "./order-export";
 
 describe("Excel Export Module", () => {
@@ -482,5 +484,233 @@ describe("Excel Export Module", () => {
       expect(resolveBranchStockHeader("Sucursal Norte")).toBe("Stock Sucursal Norte");
     });
   });
+
+  describe("collectRubroExportItems (Multi-page rubro export)", () => {
+    const branchId = "2";
+    const planningDate = "2026-10-24";
+
+    it("exports all products of a rubro distributed across two pages in a single operation", () => {
+      // Page 1: 50 products in CHOCOLATES (ids 1001 to 1050)
+      const page1: RawReplenishmentItem[] = Array.from({ length: 50 }, (_, i) => ({
+        article_id: 1001 + i,
+        description: `CHOCOLATE BARRA #${i + 1}`,
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 10,
+        stock_depot: 100,
+        suggested_quantity: 12,
+        requested_quantity: 12,
+        supply_mode: "DEPOT",
+      }));
+
+      // Page 2: 25 products in CHOCOLATES (ids 1051 to 1075)
+      const page2: RawReplenishmentItem[] = Array.from({ length: 25 }, (_, i) => ({
+        article_id: 1051 + i,
+        description: `CHOCOLATE BLANCO #${i + 1}`,
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 5,
+        stock_depot: 80,
+        suggested_quantity: 6,
+        requested_quantity: 6,
+        supply_mode: "DEPOT",
+      }));
+
+      const allItems = [...page1, ...page2];
+
+      const exported = collectRubroExportItems({
+        items: allItems,
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+      });
+
+      // Verify all 75 items across page 1 and page 2 are present
+      expect(exported.length).toBe(75);
+      expect(exported.map((item) => item.article_id)).toEqual(
+        allItems.map((item) => item.article_id),
+      );
+    });
+
+    it("includes selected products from all pages and respects manual requested quantities", () => {
+      const page1Item: RawReplenishmentItem = {
+        article_id: 2001,
+        description: "CHOCOLATE AGUILA 150G",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 2,
+        stock_depot: 50,
+        suggested_quantity: 6,
+        requested_quantity: 6,
+        supply_mode: "DEPOT",
+      };
+
+      const page2Item: RawReplenishmentItem = {
+        article_id: 2002,
+        description: "CHOCOLATE MILKA OREO",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 0,
+        stock_depot: 120,
+        suggested_quantity: 18,
+        requested_quantity: 18,
+        supply_mode: "DEPOT",
+      };
+
+      // Mónica manually adjusted page 1 item to 10
+      const requestedMap: Record<string, number> = {
+        [`${branchId}:${planningDate}:2001`]: 10,
+      };
+
+      const exported = collectRubroExportItems({
+        items: [page1Item, page2Item],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap,
+      });
+
+      expect(exported.length).toBe(2);
+
+      const exp1 = exported.find((i) => i.article_id === 2001);
+      const exp2 = exported.find((i) => i.article_id === 2002);
+
+      // Verifies manual modification is preserved
+      expect(exp1?.requested_quantity).toBe(10);
+      expect(exp1?.suggested_quantity).toBe(6);
+
+      // Verifies page 2 item retains calculated suggestion
+      expect(exp2?.requested_quantity).toBe(18);
+      expect(exp2?.suggested_quantity).toBe(18);
+    });
+
+    it("excludes destildados, items from other rubros, direct suppliers, and zero quantities", () => {
+      const items: RawReplenishmentItem[] = [
+        // 1. Valid chocolate item (kept checked)
+        {
+          article_id: 3001,
+          description: "CHOCOLATE COFLER BLOCK",
+          rubro: "CHOCOLATES",
+          classification_code: "006",
+          stock_current: 5,
+          stock_depot: 40,
+          suggested_quantity: 12,
+          requested_quantity: 12,
+          supply_mode: "DEPOT",
+        },
+        // 2. Destildado item (Mónica unchecked this chocolate item on page 1)
+        {
+          article_id: 3002,
+          description: "CHOCOLATE TOBLERONE",
+          rubro: "CHOCOLATES",
+          classification_code: "006",
+          stock_current: 10,
+          stock_depot: 30,
+          suggested_quantity: 8,
+          requested_quantity: 8,
+          supply_mode: "DEPOT",
+        },
+        // 3. Destildado item on page 2 (Mónica unchecked this on page 2)
+        {
+          article_id: 3003,
+          description: "CHOCOLATE FELFORT",
+          rubro: "CHOCOLATES",
+          classification_code: "006",
+          stock_current: 15,
+          stock_depot: 50,
+          suggested_quantity: 6,
+          requested_quantity: 6,
+          supply_mode: "DEPOT",
+        },
+        // 4. Other rubro item (GOLOSINAS)
+        {
+          article_id: 3004,
+          description: "CHICLE BUBBALOO",
+          rubro: "GOLOSINAS",
+          classification_code: "013",
+          stock_current: 20,
+          stock_depot: 200,
+          suggested_quantity: 24,
+          requested_quantity: 24,
+          supply_mode: "DEPOT",
+        },
+        // 5. Direct supplier item (even with rubro CHOCOLATES)
+        {
+          article_id: 3005,
+          description: "CHOCOLATE ARTESANAL LOCAL",
+          rubro: "CHOCOLATES",
+          classification_code: "006",
+          stock_current: 3,
+          stock_depot: null,
+          suggested_quantity: 10,
+          requested_quantity: 10,
+          supply_mode: "DIRECT_SUPPLIER",
+        },
+        // 6. Zero requested item
+        {
+          article_id: 3006,
+          description: "CHOCOLATE SIN DEMANDA",
+          rubro: "CHOCOLATES",
+          classification_code: "006",
+          stock_current: 50,
+          stock_depot: 20,
+          suggested_quantity: 0,
+          requested_quantity: 0,
+          supply_mode: "DEPOT",
+        },
+      ];
+
+      const selectedMap: Record<string, boolean> = {
+        [`${branchId}:${planningDate}:3001`]: true,
+        [`${branchId}:${planningDate}:3002`]: false, // Unchecked by user
+        [`${branchId}:${planningDate}:3003`]: false, // Unchecked by user
+      };
+
+      const exported = collectRubroExportItems({
+        items,
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        selectedMap,
+      });
+
+      // Only item 3001 should be included!
+      expect(exported.length).toBe(1);
+      expect(exported[0].article_id).toBe(3001);
+      expect(exported.some((i) => i.article_id === 3002)).toBe(false);
+      expect(exported.some((i) => i.article_id === 3003)).toBe(false);
+      expect(exported.some((i) => i.article_id === 3004)).toBe(false);
+      expect(exported.some((i) => i.article_id === 3005)).toBe(false);
+      expect(exported.some((i) => i.article_id === 3006)).toBe(false);
+    });
+
+    it("eliminates duplicates when an item appears in multiple pages or responses", () => {
+      const duplicatedItem: RawReplenishmentItem = {
+        article_id: 4001,
+        description: "CHOCOLATE DUPLICADO TEST",
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 4,
+        stock_depot: 50,
+        suggested_quantity: 15,
+        requested_quantity: 15,
+        supply_mode: "DEPOT",
+      };
+
+      const page1 = [duplicatedItem];
+      const page2 = [{ ...duplicatedItem }]; // duplicate in page 2
+
+      const exported = collectRubroExportItems({
+        items: [...page1, ...page2],
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+      });
+
+      expect(exported.length).toBe(1);
+      expect(exported[0].article_id).toBe(4001);
+    });
+  });
 });
+
 

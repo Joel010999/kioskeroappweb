@@ -1,5 +1,5 @@
 import * as xlsx from "xlsx";
-import { resolveRubroName, compareByRubroAndProduct } from "@/server/catalog/rubros";
+import { resolveRubroName, compareByRubroAndProduct, isSinRubro } from "@/server/catalog/rubros";
 import { resolveProductPresentation } from "@/server/catalog/presentations";
 
 export type ReplenishmentExportItem = {
@@ -18,6 +18,105 @@ export type ReplenishmentExportItem = {
   presentation?: string | null;
   presentation_display?: string | null;
 };
+
+export type RawReplenishmentItem = {
+  article_id: number;
+  description: string | null;
+  rubro?: string | null;
+  classification_code?: string | null;
+  stock_current: number;
+  stock_depot: number | null;
+  suggested_quantity: number | null;
+  requested_quantity: number;
+  supply_mode: string;
+  supplier_code?: string | null;
+  unit_measure?: string | null;
+  package_units?: number | null;
+  presentation?: string | null;
+  presentation_display?: string | null;
+};
+
+export type CollectRubroExportItemsParams = {
+  items: RawReplenishmentItem[];
+  branchId: string;
+  planningDate: string;
+  targetRubro?: string | null;
+  requestedMap?: Record<string, number>;
+  selectedMap?: Record<string, boolean>;
+};
+
+export function collectRubroExportItems(
+  params: CollectRubroExportItemsParams,
+): ReplenishmentExportItem[] {
+  const {
+    items,
+    branchId,
+    planningDate,
+    targetRubro,
+    requestedMap = {},
+    selectedMap = {},
+  } = params;
+
+  const seen = new Set<number>();
+  const result: ReplenishmentExportItem[] = [];
+
+  for (const item of items) {
+    // 1. Deduplicate by article_id across multiple pages
+    if (seen.has(item.article_id)) continue;
+    seen.add(item.article_id);
+
+    // 2. Supply mode eligibility: only DEPOT or UNDEFINED (exclude DIRECT_SUPPLIER)
+    if (item.supply_mode === "DIRECT_SUPPLIER") continue;
+
+    // 3. Rubro filter if specified
+    const resolvedRubro = resolveRubroName(item.classification_code, item.rubro);
+    if (targetRubro) {
+      if (targetRubro === "__SIN_RUBRO__") {
+        if (!isSinRubro(resolvedRubro)) continue;
+      } else {
+        if (resolvedRubro.trim().toLowerCase() !== targetRubro.trim().toLowerCase()) {
+          continue;
+        }
+      }
+    }
+
+    // 4. Requested quantity (respecting manual edits)
+    const key = `${branchId}:${planningDate}:${item.article_id}`;
+    const reqVal =
+      requestedMap[key] !== undefined
+        ? requestedMap[key]
+        : item.requested_quantity;
+
+    // 5. Selection / Destildados rule
+    const isExplicitlyChecked = selectedMap[key];
+    const isIncluded =
+      isExplicitlyChecked !== undefined ? isExplicitlyChecked : reqVal > 0;
+
+    if (!isIncluded) continue;
+
+    // 6. Quantity rule: must be > 0
+    if (reqVal <= 0) continue;
+
+    result.push({
+      article_id: item.article_id,
+      description: item.description,
+      rubro: resolvedRubro,
+      classification_code: item.classification_code,
+      stock_current: item.stock_current,
+      stock_depot: item.stock_depot,
+      suggested_quantity: item.suggested_quantity,
+      requested_quantity: reqVal,
+      supply_mode: item.supply_mode,
+      supplier_code: item.supplier_code,
+      unit_measure: item.unit_measure,
+      package_units: item.package_units,
+      presentation: item.presentation,
+      presentation_display: item.presentation_display,
+    });
+  }
+
+  return result;
+}
 
 export type OrderExportItem = {
   id: number;
