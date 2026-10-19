@@ -52,6 +52,32 @@ try {
   process.exit(1);
 }
 
+async function setPairingLock() {
+  try {
+    await query(
+      `INSERT INTO whatsapp_baileys_session (session_id, key_id, ciphertext, iv, tag, updated_at)
+       VALUES ('default', 'lock:pairing', 'active', 'none', 'none', now())
+       ON CONFLICT (session_id, key_id)
+       DO UPDATE SET ciphertext = 'active', updated_at = now()`
+    );
+  } catch {}
+}
+
+async function clearPairingLock() {
+  try {
+    await query("DELETE FROM whatsapp_baileys_session WHERE session_id = 'default' AND key_id = 'lock:pairing'");
+  } catch {}
+}
+
+process.on("SIGINT", async () => {
+  console.log("\nCancelando vinculación...");
+  await clearPairingLock();
+  if (activeWorker) {
+    try { await activeWorker.stop(); } catch {}
+  }
+  process.exit(1);
+});
+
 console.log("Conectando con WhatsApp para solicitar código de vinculación...");
 
 let activeWorker = null;
@@ -60,6 +86,7 @@ let reconnectAttempts = 0;
 
 async function runPairing(cleanPreviousSession = false) {
   try {
+    await setPairingLock();
     activeWorker = await startBaileysWorker({
       sessionId: "default",
       pairingNumber: cleanNumber,
@@ -77,36 +104,41 @@ async function runPairing(cleanPreviousSession = false) {
       },
       onConnectionOpen: async () => {
         isLinked = true;
-        try {
-          if (activeWorker?.saveCreds) {
-            await activeWorker.saveCreds();
-          }
-          const check = await query(
-            "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
-            ["default", "creds"]
-          );
-          const allKeysCheck = await query(
-            "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
-            ["default"]
-          );
-          const count = parseInt(check.rows?.[0]?.count || "0", 10);
-          const totalKeys = parseInt(allKeysCheck.rows?.[0]?.count || "0", 10);
-          if (count === 0) {
-            console.error("\n❌ [ERROR CRÍTICO] La conexión abrió pero el registro 'creds' no existe en PostgreSQL.");
+        console.log("\n[PAIR] ¡Dispositivo reconocido por WhatsApp! Esperando sincronización de claves y credenciales...");
+        // Wait 4 seconds for Baileys to complete initial companion synchronization and key exchange
+        setTimeout(async () => {
+          try {
+            if (activeWorker?.saveCreds) {
+              await activeWorker.saveCreds();
+            }
+            const check = await query(
+              "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
+              ["default", "creds"]
+            );
+            const allKeysCheck = await query(
+              "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
+              ["default"]
+            );
+            const count = parseInt(check.rows?.[0]?.count || "0", 10);
+            const totalKeys = parseInt(allKeysCheck.rows?.[0]?.count || "0", 10);
+            if (count === 0) {
+              console.error("\n❌ [ERROR CRÍTICO] La conexión abrió pero el registro 'creds' no existe en PostgreSQL.");
+              await clearPairingLock();
+              process.exit(1);
+            }
+            console.log(`\n[PAIR DIAGNOSTIC] Verificación en PostgreSQL: ${totalKeys} claves guardadas, registro 'creds' confirmado.`);
+            console.log("✅ [ÉXITO] ¡Dispositivo vinculado y sincronizado correctamente!");
+            console.log("Cerrando socket local de vinculación para ceder el control al Worker de Railway...");
+            await activeWorker?.stop();
+            await clearPairingLock();
+            console.log("Socket local cerrado. Las credenciales están listas en PostgreSQL para el Worker de Railway.\n");
+            process.exit(0);
+          } catch (err) {
+            console.error("\n❌ [ERROR CRÍTICO] Falló el guardado final en PostgreSQL:", err?.message || err);
+            await clearPairingLock();
             process.exit(1);
           }
-          console.log(`\n[PAIR DIAGNOSTIC] Verificación en PostgreSQL: ${totalKeys} claves guardadas, registro 'creds' confirmado.`);
-          console.log("✅ [ÉXITO] ¡Dispositivo vinculado correctamente!");
-          console.log("Las credenciales fueron cifradas con AES-256-GCM y confirmadas en PostgreSQL.");
-          console.log("Ya podés iniciar el servicio Worker en Railway.\n");
-        } catch (err) {
-          console.error("\n❌ [ERROR CRÍTICO] Falló la verificación de persistencia en PostgreSQL:", err?.message || err);
-          process.exit(1);
-        }
-        setTimeout(async () => {
-          await activeWorker?.stop();
-          process.exit(0);
-        }, 2000);
+        }, 4000);
       },
       onConnectionClose: async (shouldReconnect, statusCode) => {
         if (isLinked) return;
@@ -126,12 +158,14 @@ async function runPairing(cleanPreviousSession = false) {
         } else {
           console.error(`\n❌ [ERROR] La sesión no se pudo vincular (código de desconexión: ${statusCode ?? "desconocido"}).`);
           console.error("Si el error persiste, esperá 2 minutos para evitar límites de intentos de WhatsApp y volvé a probar.");
+          await clearPairingLock();
           process.exit(1);
         }
       },
     });
   } catch (error) {
     console.error("Fallo al inicializar vinculación:", error?.message || error);
+    await clearPairingLock();
     process.exit(1);
   }
 }

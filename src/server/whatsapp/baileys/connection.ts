@@ -107,9 +107,21 @@ export async function startBaileysWorker(
     }
   }
 
+  let pendingCredsSave: Promise<void> | null = null;
+  const safeSaveCreds = async (): Promise<void> => {
+    try {
+      pendingCredsSave = saveCreds();
+      await pendingCredsSave;
+    } catch (saveErr) {
+      logger.error({ err: saveErr }, "Error saving credentials to PostgreSQL.");
+    } finally {
+      pendingCredsSave = null;
+    }
+  };
+
   // 1. Credentials update listener
   sock.ev.on("creds.update", async () => {
-    await saveCreds();
+    await safeSaveCreds();
   });
 
   // 2. Connection update listener (reconnection & lifecycle)
@@ -118,7 +130,7 @@ export async function startBaileysWorker(
 
     if (connection === "open") {
       logger.info("Baileys connection established successfully.");
-      await saveCreds();
+      await safeSaveCreds();
       await clearEncryptedPairingCode(sessionId);
       config.onConnectionOpen?.();
     }
@@ -130,7 +142,10 @@ export async function startBaileysWorker(
       logger.warn({ statusCode, isLoggedOut, err: lastDisconnect?.error }, "Baileys connection closed.");
 
       if (isLoggedOut) {
-        await clearSession();
+        logger.error(
+          { statusCode, err: lastDisconnect?.error },
+          "WhatsApp session disconnected or conflict encountered (status 401). Preserving session data in PostgreSQL."
+        );
         await clearEncryptedPairingCode(sessionId);
         config.onConnectionClose?.(false, statusCode, lastDisconnect?.error as Error);
       } else if (!isStopping) {
@@ -192,6 +207,10 @@ export async function startBaileysWorker(
   const stop = async (): Promise<void> => {
     isStopping = true;
     try {
+      if (pendingCredsSave) {
+        await pendingCredsSave;
+      }
+      await safeSaveCreds();
       sock.end(undefined);
     } catch {
       // socket end

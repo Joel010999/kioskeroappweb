@@ -90,43 +90,79 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 async function startSocket() {
   if (isShuttingDown || !currentLockHandle?.acquired) return;
 
+  // 1. Ensure any previous worker socket is cleanly stopped before opening a new one
+  if (activeWorker) {
+    try {
+      logger.info("Stopping previous Baileys worker socket before opening a new connection...");
+      await activeWorker.stop();
+    } catch (stopErr) {
+      logger.warn({ err: stopErr }, "Notice: error stopping previous worker socket.");
+    }
+    activeWorker = null;
+  }
+
   try {
     await ensureSessionTable();
+
+    // 2. Clean expired pairing locks (>3 minutes old)
     try {
-      const credsCheck = await query(
-        "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
-        ["default", "creds"]
-      );
-      const totalKeysCheck = await query(
-        "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
+      await query(
+        "DELETE FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = 'lock:pairing' AND updated_at < now() - interval '3 minutes'",
         ["default"]
       );
-      const hasCreds = parseInt(credsCheck.rows?.[0]?.count || "0", 10) > 0;
-      const totalKeys = parseInt(totalKeysCheck.rows?.[0]?.count || "0", 10);
+    } catch {}
 
+    // 3. Check if local pairing is currently in progress
+    const pairingLockCheck = await query(
+      "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = 'lock:pairing'",
+      ["default"]
+    );
+    const isPairingActive = parseInt(pairingLockCheck.rows?.[0]?.count || "0", 10) > 0;
+    if (isPairingActive) {
       logger.info(
-        { hasCreds, totalKeys, sessionId: "default" },
-        `[WHATSAPP DAEMON DIAGNOSTIC] Session 'default' in PostgreSQL: ${totalKeys} total keys stored, 'creds' present: ${hasCreds}`
+        "[WHATSAPP DAEMON] Pairing is in progress from a local pairing tool. Standing by to avoid dual socket conflicts (checking again in 10s)..."
       );
-
-      if (hasCreds) {
-        logger.info("[WHATSAPP DAEMON DIAGNOSTIC] Found registered session credentials in PostgreSQL. Resuming connection...");
-      } else {
-        logger.warn(
-          { totalKeys, hasCreds },
-          `[WHATSAPP DAEMON DIAGNOSTIC] No registered credentials found in PostgreSQL for key 'creds' (total keys: ${totalKeys}). ` +
-          "Baileys cannot resume a session because PostgreSQL does not have pairing credentials. " +
-          "Execute pairing using 'node scripts/whatsapp-pair.mjs <phone>' against the Railway database to store credentials."
-        );
+      if (!isShuttingDown) {
+        reconnectTimer = setTimeout(startSocket, 10000);
       }
-    } catch (checkErr) {
-      logger.warn({ err: checkErr instanceof Error ? checkErr.message : checkErr }, "Warning checking session table.");
+      return;
     }
 
+    // 4. Verify session credentials exist before opening a socket
+    const credsCheck = await query(
+      "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
+      ["default", "creds"]
+    );
+    const totalKeysCheck = await query(
+      "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
+      ["default"]
+    );
+    const hasCreds = parseInt(credsCheck.rows?.[0]?.count || "0", 10) > 0;
+    const totalKeys = parseInt(totalKeysCheck.rows?.[0]?.count || "0", 10);
+
+    logger.info(
+      { hasCreds, totalKeys, sessionId: "default" },
+      `[WHATSAPP DAEMON DIAGNOSTIC] Session 'default' in PostgreSQL: ${totalKeys} total keys stored, 'creds' present: ${hasCreds}`
+    );
+
+    if (!hasCreds) {
+      logger.warn(
+        { totalKeys, hasCreds },
+        `[WHATSAPP DAEMON DIAGNOSTIC] No registered credentials found in PostgreSQL for key 'creds'. ` +
+        "Daemon will not open an unauthenticated QR socket in headless mode. " +
+        "Standing by until device is paired via 'node scripts/whatsapp-pair.mjs <phone>' (checking in 15s)..."
+      );
+      if (!isShuttingDown) {
+        reconnectTimer = setTimeout(startSocket, 15000);
+      }
+      return;
+    }
+
+    logger.info("[WHATSAPP DAEMON DIAGNOSTIC] Found registered session credentials in PostgreSQL. Resuming connection...");
     logger.info("Connecting to WhatsApp via Baileys...");
+
     activeWorker = await startBaileysWorker({
       sessionId: "default",
-      pairingNumber: process.env.WHATSAPP_PAIRING_NUMBER,
       allowedNumbersEnv: process.env.WHATSAPP_ALLOWED_NUMBERS,
       logger,
       onConnectionOpen: () => {
@@ -135,19 +171,35 @@ async function startSocket() {
           registerActiveSender(activeWorker.sendMessage);
         }
       },
-      onConnectionClose: async (shouldReconnect) => {
+      onConnectionClose: async (shouldReconnect, statusCode) => {
         registerActiveSender(null);
         if (isShuttingDown) return;
 
+        if (activeWorker) {
+          try {
+            await activeWorker.stop();
+          } catch {}
+          activeWorker = null;
+        }
+
         if (shouldReconnect) {
-          logger.warn("WhatsApp connection closed. Scheduling reconnection in 5s...");
+          logger.warn({ statusCode }, "WhatsApp connection closed. Scheduling reconnection in 5s...");
           reconnectTimer = setTimeout(() => {
             if (!isShuttingDown && currentLockHandle?.acquired) {
               startSocket();
             }
           }, 5000);
         } else {
-          logger.error("WhatsApp session was logged out. Please re-pair the device.");
+          logger.error(
+            { statusCode },
+            "WhatsApp session was disconnected or unauthorized (status 401). " +
+            "Session data is preserved in PostgreSQL. Pausing for 30s before checking..."
+          );
+          reconnectTimer = setTimeout(() => {
+            if (!isShuttingDown && currentLockHandle?.acquired) {
+              startSocket();
+            }
+          }, 30000);
         }
       },
     });
