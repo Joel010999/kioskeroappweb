@@ -101,7 +101,7 @@ export default function WorkspaceEditorPage({ params }: { params: Promise<{ id: 
   const isReadOnly = workspace?.status === 'FINALIZED' || workspace?.status === 'DOWNLOADED';
 
   return (
-    <main className="p-8 max-w-6xl mx-auto">
+    <main className="orders-shell" style={{ paddingTop: "2rem" }}>
       <header className="mb-6 flex justify-between items-end border-b pb-4">
         <div>
           <Link href="/workspaces" className="text-blue-600 hover:underline mb-2 inline-block">&larr; Volver a Mis Pedidos</Link>
