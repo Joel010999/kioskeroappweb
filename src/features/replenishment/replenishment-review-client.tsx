@@ -238,6 +238,8 @@ export function ReplenishmentReviewClient({
   const [authError, setAuthError] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [showRestoreAllModal, setShowRestoreAllModal] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
   const [reloadCounter, setReloadCounter] = useState(0);
 
   const [requested, setRequested] = useState<Record<string, number>>(() => {
@@ -659,6 +661,132 @@ export function ReplenishmentReviewClient({
     }));
   };
 
+  const executeRestoreAllSuggestions = () => {
+    const nextRequested: Record<string, number> = {};
+    const nextEdited: Record<string, true> = {};
+    const nextSelected: Record<string, boolean> = {};
+    const nextSelectedItems: Record<
+      string,
+      {
+        article_id: number;
+        requested_quantity: number;
+        supply_mode: SupplyMode;
+      }
+    > = {};
+    const nextItemRegistry: Record<number, ReplenishmentExportItem> = {
+      ...itemRegistry,
+    };
+
+    // 1. Process all items registered in memory or loaded from draft
+    for (const regItem of Object.values(itemRegistry)) {
+      const sug = regItem.suggested_quantity ?? 0;
+      const key = requestedKey(branchId, planningDate, regItem.article_id);
+      nextRequested[key] = sug;
+      nextItemRegistry[regItem.article_id] = {
+        ...regItem,
+        requested_quantity: sug,
+      };
+
+      const mode: SupplyMode =
+        regItem.supply_mode === "DIRECT_SUPPLIER"
+          ? "DIRECT_SUPPLIER"
+          : regItem.supply_mode === "DEPOT"
+            ? "DEPOT"
+            : "UNDEFINED";
+
+      if (mode === "DIRECT_SUPPLIER") {
+        nextSelected[key] = false;
+      } else {
+        const isEligible = sug > 0;
+        nextSelected[key] = isEligible;
+        if (isEligible) {
+          nextSelectedItems[key] = {
+            article_id: regItem.article_id,
+            requested_quantity: sug,
+            supply_mode: mode,
+          };
+        }
+      }
+    }
+
+    // 2. Also process items from the current query view (data.items) to ensure newest calculated suggestions
+    if (data?.items) {
+      for (const item of data.items) {
+        const sug = item.suggested_quantity ?? 0;
+        const key = requestedKey(branchId, planningDate, item.article_id);
+        nextRequested[key] = sug;
+        nextItemRegistry[item.article_id] = {
+          ...(nextItemRegistry[item.article_id] || {
+            article_id: item.article_id,
+            description: item.description,
+            rubro: item.rubro ?? item.classification_code ?? null,
+            classification_code: item.classification_code,
+            stock_current: item.stock_current,
+            stock_depot: item.stock_depot,
+            suggested_quantity: item.suggested_quantity,
+            supply_mode: item.supply_mode,
+            supplier_code: item.supplier_code,
+            unit_measure: item.unit_measure,
+            package_units: item.package_units,
+            presentation: item.presentation,
+            presentation_display: item.presentation_display,
+          }),
+          requested_quantity: sug,
+        };
+
+        if (item.supply_mode === "DIRECT_SUPPLIER") {
+          nextSelected[key] = false;
+          delete nextSelectedItems[key];
+        } else {
+          const isEligible = sug > 0;
+          nextSelected[key] = isEligible;
+          if (isEligible) {
+            nextSelectedItems[key] = {
+              article_id: item.article_id,
+              requested_quantity: sug,
+              supply_mode: item.supply_mode,
+            };
+          } else {
+            delete nextSelectedItems[key];
+          }
+        }
+      }
+    }
+
+    // 3. Immediately persist updated draft to localStorage so reloading preserves the restored state
+    try {
+      localStorage.setItem(
+        draftStorageKey(branchId, planningDate),
+        JSON.stringify({
+          requested: nextRequested,
+          edited: nextEdited,
+          selected: nextSelected,
+          selectedItems: nextSelectedItems,
+          itemRegistry: nextItemRegistry,
+          savedAt: Date.now(),
+        }),
+      );
+    } catch {
+      // Ignore quota errors
+    }
+
+    // 4. Update component state synchronously
+    setRequested(nextRequested);
+    requestedRef.current = nextRequested;
+    setEdited(nextEdited);
+    setSelected(nextSelected);
+    selectedRef.current = nextSelected;
+    setSelectedItems(nextSelectedItems);
+    setItemRegistry(nextItemRegistry);
+    setDraftRestored(false);
+    setShowRestoreAllModal(false);
+
+    const count = Object.keys(nextRequested).length;
+    setRestoreNotice(
+      `Se restauraron todas las cantidades a los valores sugeridos por el sistema (${count} productos actualizados).`,
+    );
+  };
+
   const openConfirmModal = () => {
     if (!data) return;
     const items = globalSelections.filter(
@@ -927,6 +1055,17 @@ export function ReplenishmentReviewClient({
         )}
 
         <div className="review-actions-group">
+          {/* Restore All Suggestions Button */}
+          <button
+            type="button"
+            className="order-export-btn"
+            onClick={() => setShowRestoreAllModal(true)}
+            title="Restablecer todas las cantidades solicitadas a los valores sugeridos por el sistema"
+            disabled={loading || !data || confirmedOrder !== null}
+          >
+            🔄 Restaurar todas las sugeridas
+          </button>
+
           {/* Excel Export Button */}
           <button
             type="button"
@@ -965,6 +1104,31 @@ export function ReplenishmentReviewClient({
         </div>
       </section>
 
+      {/* Restored Suggestions Feedback Notification */}
+      {restoreNotice && (
+        <section
+          className="replenishment-draft-notice"
+          style={{
+            background: "#ecfdf5",
+            borderColor: "#a7f3d0",
+            color: "#065f46",
+          }}
+        >
+          <div>
+            <strong style={{ color: "#047857" }}>✓ Sugerencias restauradas:</strong>{" "}
+            {restoreNotice}
+          </div>
+          <button
+            type="button"
+            className="order-text-button"
+            style={{ color: "#047857" }}
+            onClick={() => setRestoreNotice(null)}
+          >
+            Cerrar
+          </button>
+        </section>
+      )}
+
       {/* Restored Draft Notice */}
       {draftRestored && (
         <section className="replenishment-draft-notice">
@@ -983,9 +1147,9 @@ export function ReplenishmentReviewClient({
           <button
             type="button"
             className="order-text-button"
-            onClick={clearDraft}
+            onClick={() => setShowRestoreAllModal(true)}
           >
-            Descartar borrador y reiniciar
+            Restaurar todas las sugeridas
           </button>
         </section>
       )}
@@ -1488,6 +1652,75 @@ export function ReplenishmentReviewClient({
                 {confirming
                   ? "Confirmando solicitud..."
                   : "✓ Confirmar y enviar pedido definitivo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restore All Suggestions Confirmation Modal */}
+      {showRestoreAllModal && (
+        <div
+          className="export-modal-backdrop"
+          onClick={() => setShowRestoreAllModal(false)}
+        >
+          <div
+            className="export-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="restore-modal-title"
+          >
+            <div className="export-modal-header">
+              <h3 id="restore-modal-title">🔄 Restaurar todas las sugeridas</h3>
+              <p>
+                ¿Deseás restablecer las cantidades solicitadas de todos los productos?
+              </p>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gap: "0.5rem",
+                color: "#334155",
+                fontSize: "0.88rem",
+                lineHeight: 1.5,
+              }}
+            >
+              <p style={{ margin: 0 }}>
+                • Para cada producto, se establecerá <strong>Solicitada = Sugerida</strong> con el valor calculado por el sistema.
+              </p>
+              <p style={{ margin: 0 }}>
+                • Se reemplazarán las cantidades que hayas modificado manualmente.
+              </p>
+              <p style={{ margin: 0 }}>
+                • Se actualizará el borrador guardado en este navegador para que persista al recargar.
+              </p>
+              <p style={{ margin: 0, color: "#64748b", fontSize: "0.82rem" }}>
+                ℹ️ Esta acción no crea ni confirma pedidos ni modifica el inventario.
+              </p>
+            </div>
+            <div
+              className="export-modal-footer"
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "0.75rem",
+                marginTop: "1.25rem",
+              }}
+            >
+              <button
+                type="button"
+                className="order-secondary"
+                onClick={() => setShowRestoreAllModal(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="order-primary"
+                onClick={executeRestoreAllSuggestions}
+              >
+                Restaurar sugeridas
               </button>
             </div>
           </div>

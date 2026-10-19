@@ -110,4 +110,126 @@ describe("Replenishment Draft & Rubro State Preservation", () => {
     delete mockStorage[storageKey];
     expect(mockStorage[storageKey]).toBeUndefined();
   });
+
+  it("restores all requested quantities to suggested values and clears manual edit flags", () => {
+    // Scenario: user manually changed items:
+    // item 101: suggested 6 -> manually set to 0
+    // item 102: suggested 7 -> manually set to 0
+    // item 103: suggested 17 -> kept at 17
+    // item 104: suggested 0 -> 0
+    // item 105: supplier direct -> suggested 12
+    const itemRegistry: Record<number, {
+      article_id: number;
+      description: string;
+      suggested_quantity: number | null;
+      requested_quantity: number;
+      supply_mode: "DEPOT" | "DIRECT_SUPPLIER" | "UNDEFINED";
+      stock_depot: number | null;
+    }> = {
+      101: { article_id: 101, description: "PRODUCTO A", suggested_quantity: 6, requested_quantity: 0, supply_mode: "DEPOT", stock_depot: 20 },
+      102: { article_id: 102, description: "PRODUCTO B", suggested_quantity: 7, requested_quantity: 0, supply_mode: "DEPOT", stock_depot: 5 },
+      103: { article_id: 103, description: "PRODUCTO C", suggested_quantity: 17, requested_quantity: 17, supply_mode: "DEPOT", stock_depot: 50 },
+      104: { article_id: 104, description: "PRODUCTO D (SIN SUG)", suggested_quantity: 0, requested_quantity: 0, supply_mode: "DEPOT", stock_depot: 0 },
+      105: { article_id: 105, description: "PRODUCTO E (PROV DIR)", suggested_quantity: 12, requested_quantity: 12, supply_mode: "DIRECT_SUPPLIER", stock_depot: null },
+    };
+
+    const initialDraft = {
+      requested: {
+        [`${branchId}:${planningDate}:101`]: 0,
+        [`${branchId}:${planningDate}:102`]: 0,
+        [`${branchId}:${planningDate}:103`]: 17,
+      },
+      edited: {
+        [`${branchId}:${planningDate}:101`]: true,
+        [`${branchId}:${planningDate}:102`]: true,
+      },
+      selected: {
+        [`${branchId}:${planningDate}:101`]: false,
+        [`${branchId}:${planningDate}:102`]: false,
+        [`${branchId}:${planningDate}:103`]: true,
+      },
+      selectedItems: {
+        [`${branchId}:${planningDate}:103`]: { article_id: 103, requested_quantity: 17, supply_mode: "DEPOT" },
+      },
+      itemRegistry,
+      savedAt: Date.now(),
+    };
+
+    mockStorage[storageKey] = JSON.stringify(initialDraft);
+
+    // Simulate "Restaurar todas las sugeridas" action
+    const nextRequested: Record<string, number> = {};
+    const nextEdited: Record<string, true> = {};
+    const nextSelected: Record<string, boolean> = {};
+    const nextSelectedItems: Record<string, { article_id: number; requested_quantity: number; supply_mode: "DEPOT" | "DIRECT_SUPPLIER" | "UNDEFINED" }> = {};
+    const nextItemRegistry = { ...itemRegistry };
+
+    for (const item of Object.values(itemRegistry)) {
+      const sug = item.suggested_quantity ?? 0;
+      const key = `${branchId}:${planningDate}:${item.article_id}`;
+      nextRequested[key] = sug;
+      nextItemRegistry[item.article_id] = {
+        ...item,
+        requested_quantity: sug,
+      };
+
+      if (item.supply_mode === "DIRECT_SUPPLIER") {
+        nextSelected[key] = false;
+      } else {
+        const isEligible = sug > 0;
+        nextSelected[key] = isEligible;
+        if (isEligible) {
+          nextSelectedItems[key] = {
+            article_id: item.article_id,
+            requested_quantity: sug,
+            supply_mode: item.supply_mode,
+          };
+        }
+      }
+    }
+
+    // Persist restored draft to storage
+    mockStorage[storageKey] = JSON.stringify({
+      requested: nextRequested,
+      edited: nextEdited,
+      selected: nextSelected,
+      selectedItems: nextSelectedItems,
+      itemRegistry: nextItemRegistry,
+      savedAt: Date.now(),
+    });
+
+    // Verify 1: Requested equals Suggested
+    expect(nextRequested[`${branchId}:${planningDate}:101`]).toBe(6);
+    expect(nextRequested[`${branchId}:${planningDate}:102`]).toBe(7);
+    expect(nextRequested[`${branchId}:${planningDate}:103`]).toBe(17);
+    expect(nextRequested[`${branchId}:${planningDate}:104`]).toBe(0);
+    expect(nextRequested[`${branchId}:${planningDate}:105`]).toBe(12);
+
+    // Verify 2: Edited flags are completely cleared
+    expect(Object.keys(nextEdited).length).toBe(0);
+
+    // Verify 3: Product eligibility rules
+    // DIRECT_SUPPLIER must not be selected for depot replenishment
+    expect(nextSelected[`${branchId}:${planningDate}:105`]).toBe(false);
+    expect(nextSelectedItems[`${branchId}:${planningDate}:105`]).toBeUndefined();
+
+    // Items with suggested 0 must not be selected
+    expect(nextSelected[`${branchId}:${planningDate}:104`]).toBe(false);
+    expect(nextSelectedItems[`${branchId}:${planningDate}:104`]).toBeUndefined();
+
+    // Items with DEPOT and suggested > 0 are selected
+    expect(nextSelected[`${branchId}:${planningDate}:101`]).toBe(true);
+    expect(nextSelected[`${branchId}:${planningDate}:102`]).toBe(true);
+    expect(nextSelected[`${branchId}:${planningDate}:103`]).toBe(true);
+    expect(nextSelectedItems[`${branchId}:${planningDate}:101`].requested_quantity).toBe(6);
+    expect(nextSelectedItems[`${branchId}:${planningDate}:102`].requested_quantity).toBe(7);
+    expect(nextSelectedItems[`${branchId}:${planningDate}:103`].requested_quantity).toBe(17);
+
+    // Verify 4: Reloading from storage preserves restored quantities, not old zeros
+    const reloaded = JSON.parse(mockStorage[storageKey]);
+    expect(reloaded.requested[`${branchId}:${planningDate}:101`]).toBe(6);
+    expect(reloaded.requested[`${branchId}:${planningDate}:102`]).toBe(7);
+    expect(reloaded.requested[`${branchId}:${planningDate}:103`]).toBe(17);
+    expect(Object.keys(reloaded.edited).length).toBe(0);
+  });
 });
