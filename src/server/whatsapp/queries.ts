@@ -158,6 +158,102 @@ export async function queryProductStock(
 }
 
 /**
+ * Queries lowest stock products using existing getStock service and real branch filters.
+ * Falls back to latest processed depot snapshot if Depósito Central has no rows in stock_levels_raw.
+ */
+export async function queryLowStock(
+  branchTarget: BranchTarget = "ALL",
+  branchId?: number,
+  limit = 10
+): Promise<{
+  branchName: string;
+  branchId: number;
+  total: number;
+  items: Array<{
+    articleId: number;
+    description: string;
+    saldo: number;
+    stockStatus: "OUT_OF_STOCK" | "AVAILABLE";
+  }>;
+}> {
+  const targetBranch =
+    branchId ??
+    (branchTarget === "CENTRO" ? 2 : branchTarget === "JARDIN" ? 3 : branchTarget === "DEPOSITO" ? 1 : 1);
+  const branchName = targetBranch === 1 ? "Depósito Central" : targetBranch === 2 ? "Centro" : "Jardín";
+
+  try {
+    const scope = await resolveScope(targetBranch);
+    const stockData = await getStock(scope, { limit, offset: 0 });
+
+    if (stockData && stockData.rows && stockData.rows.length > 0) {
+      return {
+        branchName,
+        branchId: targetBranch,
+        total: stockData.total,
+        items: stockData.rows.map((r) => ({
+          articleId: r.article_id,
+          description: r.description ?? `Artículo ${r.article_id}`,
+          saldo: r.saldo,
+          stockStatus: r.stock_status,
+        })),
+      };
+    }
+
+    // If branch 1 (Depósito Central) has no rows in stock_levels_raw, check processed stock_snapshots
+    if (targetBranch === 1) {
+      const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
+      const snapRes = await query<{
+        article_id: number;
+        description: string | null;
+        stock_quantity: string;
+      }>(
+        `SELECT i.article_id,
+                COALESCE(p.payload->>'Descripcion', 'Artículo ' || i.article_id) AS description,
+                i.stock_quantity
+         FROM stock_snapshot_items i
+         JOIN stock_snapshots s ON s.id = i.snapshot_id
+         LEFT JOIN products_raw p ON p.organization_id = s.organization_id AND p.article_id = i.article_id
+         WHERE s.organization_id = $1 AND s.status = 'PROCESSED'
+         ORDER BY s.uploaded_at DESC, i.stock_quantity::numeric ASC
+         LIMIT $2`,
+        [orgId, limit]
+      );
+
+      if (snapRes.rows && snapRes.rows.length > 0) {
+        return {
+          branchName,
+          branchId: targetBranch,
+          total: snapRes.rows.length,
+          items: snapRes.rows.map((r) => {
+            const saldo = Number(r.stock_quantity);
+            return {
+              articleId: r.article_id,
+              description: r.description ?? `Artículo ${r.article_id}`,
+              saldo,
+              stockStatus: saldo <= 0 ? "OUT_OF_STOCK" : "AVAILABLE",
+            };
+          }),
+        };
+      }
+    }
+
+    return {
+      branchName,
+      branchId: targetBranch,
+      total: 0,
+      items: [],
+    };
+  } catch {
+    return {
+      branchName,
+      branchId: targetBranch,
+      total: 0,
+      items: [],
+    };
+  }
+}
+
+/**
  * Queries products out of stock or with negative stock.
  */
 export async function queryStockAlerts(
@@ -170,9 +266,11 @@ export async function queryStockAlerts(
   negativeItems: Array<{ articleId: number; description: string; saldo: number }>;
   outOfStockItems: Array<{ articleId: number; description: string }>;
 }> {
-  const targetBranch = branchId ?? (branchTarget === "CENTRO" ? 2 : branchTarget === "JARDIN" ? 3 : 2);
+  const targetBranch =
+    branchId ??
+    (branchTarget === "CENTRO" ? 2 : branchTarget === "JARDIN" ? 3 : branchTarget === "DEPOSITO" ? 1 : 2);
   const scope = await resolveScope(targetBranch);
-  const branchName = targetBranch === 2 ? "Centro" : targetBranch === 3 ? "Jardín" : "Depósito";
+  const branchName = targetBranch === 1 ? "Depósito Central" : targetBranch === 2 ? "Centro" : "Jardín";
 
   // Use getAttention with a 30-day window
   const today = new Date("2026-10-18T12:00:00.000Z");

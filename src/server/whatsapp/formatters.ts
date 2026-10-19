@@ -427,44 +427,105 @@ export function formatSystemHealthResponse(health: {
 /**
  * Formats help menu.
  */
-export function formatHelpMessage(): string {
+/**
+ * Formats low stock query response.
+ */
+export function formatLowStockResponse(data: {
+  branchName: string;
+  branchId: number;
+  total: number;
+  items: Array<{
+    articleId: number;
+    description: string;
+    saldo: number;
+    stockStatus: "OUT_OF_STOCK" | "AVAILABLE";
+  }>;
+}): string {
+  if (data.items.length === 0) {
+    return (
+      `📉 *Productos con menor stock — ${data.branchName}*\n\n` +
+      `No se registraron productos con stock bajo o sin existencias para esta sucursal.`
+    );
+  }
+
+  const lines: string[] = [
+    `📉 *Productos con menor stock — ${data.branchName}*\n`,
+  ];
+
+  for (const item of data.items) {
+    let saldoText = `${item.saldo} u.`;
+    if (item.saldo < 0) {
+      saldoText = `${item.saldo} u. ⚠️ (Saldo negativo, revisar)`;
+    } else if (item.saldo === 0) {
+      saldoText = `0 u. ⚠️ (Sin stock)`;
+    }
+    lines.push(`• *${item.description}* (Art. \`${item.articleId}\`): *${saldoText}*`);
+  }
+
+  if (data.total > data.items.length) {
+    lines.push(`\n_Mostrando los primeros ${data.items.length} de ${data.total} productos registrados con menor stock._`);
+  }
+
+  return lines.join("\n").trim();
+}
+
+/**
+ * Formats next delivery query response.
+ */
+export function formatNextDeliveryMessage(): string {
   return (
-    "🤖 *Asistente de La Casa del Kioskero*\n\n" +
-    "Podés consultarme información real del sistema escribiendo preguntas sencillas:\n\n" +
-    "📦 *Stock:*\n" +
-    "• _«Stock alfajor havanna»_\n" +
-    "• _«¿Cuánto stock de pepitos hay en Centro?»_\n" +
-    "• _«Stock artículo 1052»_\n" +
-    "• _«¿Qué productos están sin stock en Jardín?»_\n\n" +
-    "📋 *Reposición:*\n" +
-    "• _«¿Qué productos necesitan reposición en Centro?»_\n" +
-    "• _«Sugerencias de reposición Jardín»_\n\n" +
-    "🚚 *Pedidos:*\n" +
-    "• _«¿Qué pedidos siguen pendientes?»_\n" +
-    "• _«Últimos pedidos»_\n" +
-    "• _«Pedido #3»_ (para ver el detalle de un pedido)\n\n" +
-    "📊 *Métricas e Histórico:*\n" +
-    "• _«Resumen de hoy»_ o _«Resumen de esta semana»_\n" +
-    "• _«¿Qué pasó durante septiembre?»_\n" +
-    "• _«Comparame este mes con el anterior»_\n" +
-    "• _«Top más vendidos del mes»_\n\n" +
-    "🏢 *Proveedores:*\n" +
-    "• _«¿De qué proveedor es el artículo 1052?»_\n" +
-    "• _«Productos del proveedor Arcor»_\n\n" +
-    "ℹ️ _Las consultas son de solo lectura y reflejan la información en tiempo real de la base de datos._"
+    "🚚 *Próximos Pedidos*\n\n" +
+    "Todavía no tengo una fecha de llegada confirmada disponible en el sistema. Podés consultar los pedidos registrados o la reposición semanal."
   );
 }
 
 /**
- * Formats greeting message.
+ * Formats ambiguous pending query response.
+ */
+export function formatAmbiguousPendingMessage(): string {
+  return (
+    "❓ *Consulta de Pendientes*\n\n" +
+    "¿Querés consultar pedidos pendientes o productos que necesitan reposición?"
+  );
+}
+
+/**
+ * Formats purchase query response.
+ */
+export function formatPurchaseQueryMessage(): string {
+  return (
+    "🛒 *Sugerencia de Compras*\n\n" +
+    "El sistema no genera órdenes de compra automáticas arbitrarias. Las necesidades de compra se determinan en base al cálculo de reposición semanal.\n\n" +
+    "Podés consultar: _«Reposición Centro»_ o _«Reposición Jardín»_ para ver las cantidades sugeridas a reponer."
+  );
+}
+
+/**
+ * Formats greeting message matching Section 4 specification.
  */
 export function formatGreetingMessage(name?: string): string {
-  const greeted = name ? ` ${name}` : "";
+  const greeted = name ? name : "Mónica";
   return (
-    `👋 *¡Hola${greeted}!* Soy el bot de *La Casa del Kioskero*.\n\n` +
-    "Estoy disponible para responder consultas sobre *stock*, *reposición semanal*, *pedidos* y *resúmenes de movimientos* de Centro, Jardín y Depósito.\n\n" +
-    "¿Qué te gustaría consultar? _(Escribí *ayuda* para ver ejemplos de preguntas)_"
+    `👋 ¡Hola, ${greeted}! Soy el asistente de La Casa del Kioskero.\n\n` +
+    "Puedo ayudarte a consultar la información del negocio:\n\n" +
+    "📦 *1. Stock de productos*\n" +
+    "Buscá un artículo por nombre o código y consultá las cantidades disponibles en Centro, Jardín y Depósito Central.\n\n" +
+    "🧾 *2. Pedidos registrados*\n" +
+    "Consultá los últimos pedidos, sus fechas, estados y cantidades.\n\n" +
+    "🚚 *3. Reposición semanal*\n" +
+    "Consultá qué productos se recomienda reponer en cada sucursal, según la información disponible.\n\n" +
+    "📊 *4. Resúmenes del negocio*\n" +
+    "Consultá indicadores y movimientos disponibles en el sistema.\n\n" +
+    "Podés escribirme una pregunta directamente o pedirme `ayuda` para ver estas opciones.\n\n" +
+    "_Si una función todavía no está disponible, te lo voy a indicar._"
   );
+}
+
+/**
+ * Formats help menu.
+ */
+export function formatHelpMessage(name?: string): string {
+  return formatGreetingMessage(name);
 }
 
 /**
@@ -490,13 +551,12 @@ export function formatClarificationMessage(msg: string): string {
  */
 export function formatUnknownMessage(): string {
   return (
-    "🤔 No entendí la consulta con certeza.\n\n" +
-    "Probá consultando por:\n" +
-    "• *Stock* de un producto (ej. _«Stock alfajor marplatense»_)\n" +
-    "• *Pedidos pendientes* (ej. _«¿Qué pedidos faltan?»_)\n" +
-    "• *Detalle de una orden* (ej. _«Pedido #3»_)\n" +
-    "• *Reposición* (ej. _«Reposición Centro»_)\n" +
-    "• *Resumen del mes* (ej. _«Resumen septiembre»_)\n\n" +
-    "_Escribí *ayuda* para ver la lista completa de opciones._"
+    "🤔 No pude reconocer tu consulta.\n\n" +
+    "Puedo ayudarte con:\n" +
+    "• *1. Stock:* _«Stock alfajor»_, _«Art 1052»_, _«Stock bajo en Depósito Central»_\n" +
+    "• *2. Pedidos:* _«¿Qué pedidos hay?»_, _«Pedidos pendientes»_, _«Detalle del pedido 2»_\n" +
+    "• *3. Reposición:* _«Reposición semanal»_, _«Reposición Centro»_, _«Reposición Jardín»_\n" +
+    "• *4. Resumen:* _«Resumen del negocio»_, _«¿Cómo estamos de stock?»_\n\n" +
+    "_Escribí `ayuda` para ver las opciones completas o haceme una pregunta directa._"
   );
 }

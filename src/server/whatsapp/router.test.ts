@@ -174,4 +174,84 @@ describe("WhatsApp NLP Router & Intent Parsing", () => {
       expect(res.type).toBe("SYSTEM_HEALTH");
     });
   });
+
+  describe("Low Stock & Branch-Specific Stock Queries", () => {
+    it("parses low stock query in Depósito Central", () => {
+      const res = parseUserMessage("¿Qué productos tienen stock bajo en el Depósito Central?", refDate);
+      expect(res.type).toBe("STOCK_LOW");
+      expect(res.slots.branchTarget).toBe("DEPOSITO");
+      expect(res.slots.branchId).toBe(1);
+    });
+
+    it("parses low stock query in Centro", () => {
+      const res = parseUserMessage("Stock bajo en Centro", refDate);
+      expect(res.type).toBe("STOCK_LOW");
+      expect(res.slots.branchTarget).toBe("CENTRO");
+      expect(res.slots.branchId).toBe(2);
+    });
+
+    it("parses general low stock query", () => {
+      const res = parseUserMessage("Productos con menor stock", refDate);
+      expect(res.type).toBe("STOCK_LOW");
+    });
+  });
+
+  describe("Orders Queries (Strict Separation from Stock)", () => {
+    it("routes '¿Qué pedidos hay?' to ORDERS_RECENT, never to STOCK_PRODUCT", () => {
+      const res = parseUserMessage("¿Qué pedidos hay?", refDate);
+      expect(res.type).toBe("ORDERS_RECENT");
+    });
+
+    it("routes 'Pedidos registrados' to ORDERS_RECENT, never to STOCK_PRODUCT", () => {
+      const res = parseUserMessage("Pedidos registrados", refDate);
+      expect(res.type).toBe("ORDERS_RECENT");
+    });
+
+    it("routes '¿Cuáles son los últimos pedidos?' to ORDERS_RECENT", () => {
+      const res = parseUserMessage("¿Cuáles son los últimos pedidos?", refDate);
+      expect(res.type).toBe("ORDERS_RECENT");
+    });
+  });
+
+  describe("Numeric Menu Shortcuts", () => {
+    it("handles option 1 as stock query", () => {
+      const res = parseUserMessage("1", refDate);
+      expect(res.type).toBe("STOCK_PRODUCT");
+      expect(res.slots.needsClarification).toBe(true);
+    });
+
+    it("handles option 2 as recent orders", () => {
+      const res = parseUserMessage("2", refDate);
+      expect(res.type).toBe("ORDERS_RECENT");
+    });
+
+    it("handles option 3 as replenishment", () => {
+      const res = parseUserMessage("3", refDate);
+      expect(res.type).toBe("REPLENISHMENT");
+      expect(res.slots.needsClarification).toBe(true);
+    });
+
+    it("handles option 4 as business summary", () => {
+      const res = parseUserMessage("4", refDate);
+      expect(res.type).toBe("METRICS_SUMMARY");
+    });
+  });
+
+  describe("Next Delivery & Ambiguous Queries", () => {
+    it("routes '¿Cuándo llega el próximo pedido?' to NEXT_DELIVERY", () => {
+      const res = parseUserMessage("¿Cuándo llega el próximo pedido?", refDate);
+      expect(res.type).toBe("NEXT_DELIVERY");
+    });
+
+    it("routes '¿Qué tengo pendiente?' to AMBIGUOUS_PENDING", () => {
+      const res = parseUserMessage("¿Qué tengo pendiente?", refDate);
+      expect(res.type).toBe("AMBIGUOUS_PENDING");
+      expect(res.slots.needsClarification).toBe(true);
+    });
+
+    it("routes '¿Cuánto tengo que comprar?' to PURCHASE_QUERY", () => {
+      const res = parseUserMessage("¿Cuánto tengo que comprar?", refDate);
+      expect(res.type).toBe("PURCHASE_QUERY");
+    });
+  });
 });

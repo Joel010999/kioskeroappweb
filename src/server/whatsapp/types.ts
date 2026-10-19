@@ -2,6 +2,7 @@ import type { Period } from "@/server/analytics/types";
 
 export type IntentType =
   | "STOCK_PRODUCT"
+  | "STOCK_LOW"
   | "STOCK_OUT_ALERT"
   | "REPLENISHMENT"
   | "ORDERS_RECENT"
@@ -13,6 +14,9 @@ export type IntentType =
   | "METRICS_COMPARISON"
   | "METRICS_TOP_PRODUCTS"
   | "SYSTEM_HEALTH"
+  | "NEXT_DELIVERY"
+  | "AMBIGUOUS_PENDING"
+  | "PURCHASE_QUERY"
   | "HELP"
   | "GREETING"
   | "UNKNOWN";
@@ -31,7 +35,9 @@ export type ParsedSlots = {
   period?: Period;
   periodLabel?: string;
   needsClarification?: boolean;
+  clarificationType?: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING";
   clarificationMessage?: string;
+  pendingIntentType?: IntentType;
 };
 
 export type ParsedIntent = {

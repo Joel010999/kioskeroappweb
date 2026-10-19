@@ -1,14 +1,24 @@
 import { getSenderContext, maskPhone } from "./auth";
 import { registerIncomingMessage, markMessageProcessed, markMessageFailed } from "./deduplication";
 import { parseUserMessage } from "./router";
+import type { ParsedIntent } from "./types";
 import {
+  clearPendingClarification,
+  resolvePendingClarification,
+  setPendingClarification,
+} from "./context";
+import {
+  formatAmbiguousPendingMessage,
   formatClarificationMessage,
   formatGreetingMessage,
   formatHelpMessage,
+  formatLowStockResponse,
+  formatNextDeliveryMessage,
   formatOrderDetailResponse,
   formatOverviewResponse,
   formatPendingOrdersResponse,
   formatProductSupplierResponse,
+  formatPurchaseQueryMessage,
   formatRecentOrdersResponse,
   formatReplenishmentResponse,
   formatStockAlertsResponse,
@@ -20,6 +30,7 @@ import {
   formatUnknownMessage,
 } from "./formatters";
 import {
+  queryLowStock,
   queryOrderDetail,
   queryPendingOrders,
   queryPeriodOverview,
@@ -88,12 +99,44 @@ export async function processIncomingMessage(
     return { processed: true, intent: "UNAUTHORIZED", replyText };
   }
 
-  // 3. Message Interpretation / NLP routing
-  const intent = parseUserMessage(textBody);
+  // 3. Conversational context check (prioritize pending clarifications)
+  let intent: ParsedIntent;
+  const clarificationResult = resolvePendingClarification(senderPhone, textBody);
+
+  if (clarificationResult.type === "RESOLVED") {
+    console.log(
+      `[WHATSAPP PROCESSOR] Resolved pending clarification to intent=${clarificationResult.intent.type} for ${maskPhone(senderPhone)}`
+    );
+    intent = clarificationResult.intent;
+  } else if (clarificationResult.type === "CANCELLED") {
+    console.log(`[WHATSAPP PROCESSOR] Clarification cancelled by user for ${maskPhone(senderPhone)}`);
+    const replyText = clarificationResult.message;
+    const res = await sendFn(replyTarget, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Cancel reply sent: success=${Boolean(res?.success)}`);
+    await markMessageProcessed(messageId, "CANCELLED");
+    return { processed: true, intent: "CANCELLED", replyText };
+  } else if (clarificationResult.type === "RE_PROMPT") {
+    console.log(`[WHATSAPP PROCESSOR] Re-prompting clarification for ${maskPhone(senderPhone)}`);
+    const replyText = clarificationResult.message;
+    const res = await sendFn(replyTarget, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Re-prompt sent: success=${Boolean(res?.success)}`);
+    await markMessageProcessed(messageId, "RE_PROMPT");
+    return { processed: true, intent: "RE_PROMPT", replyText };
+  } else {
+    // Brand-new intent
+    intent = parseUserMessage(textBody);
+  }
+
   console.log(`[WHATSAPP PROCESSOR] Intent resolved: ${intent.type} for id=${messageId}`);
 
   // 4. Clarification check
   if (intent.slots.needsClarification && intent.slots.clarificationMessage) {
+    setPendingClarification(senderPhone, {
+      intentType: intent.slots.pendingIntentType ?? intent.type,
+      slots: intent.slots,
+      clarificationType: intent.slots.clarificationType ?? "BRANCH",
+    });
+
     const replyText = formatClarificationMessage(intent.slots.clarificationMessage);
     console.log(`[WHATSAPP PROCESSOR] Requesting clarification for intent=${intent.type}`);
     const res = await sendFn(replyTarget, replyText);
@@ -101,6 +144,9 @@ export async function processIncomingMessage(
     await markMessageProcessed(messageId, intent.type);
     return { processed: true, intent: intent.type, replyText };
   }
+
+  // Clear any existing clarification for clean slate once a query proceeds
+  clearPendingClarification(senderPhone);
 
   // 5. Query execution & Formatting
   let replyText = "";
@@ -112,7 +158,7 @@ export async function processIncomingMessage(
         break;
 
       case "HELP":
-        replyText = formatHelpMessage();
+        replyText = formatHelpMessage(senderContext.name);
         break;
 
       case "STOCK_PRODUCT": {
@@ -122,6 +168,16 @@ export async function processIncomingMessage(
           intent.slots.branchId
         );
         replyText = formatStockResponse(stockData, intent.slots.branchTarget);
+        break;
+      }
+
+      case "STOCK_LOW": {
+        const lowStockData = await queryLowStock(
+          intent.slots.branchTarget,
+          intent.slots.branchId,
+          10
+        );
+        replyText = formatLowStockResponse(lowStockData);
         break;
       }
 
@@ -135,6 +191,26 @@ export async function processIncomingMessage(
         const branchId = intent.slots.branchId || 2;
         const replData = await queryReplenishment(branchId);
         replyText = formatReplenishmentResponse(replData);
+        break;
+      }
+
+      case "NEXT_DELIVERY": {
+        replyText = formatNextDeliveryMessage();
+        break;
+      }
+
+      case "AMBIGUOUS_PENDING": {
+        replyText = formatAmbiguousPendingMessage();
+        setPendingClarification(senderPhone, {
+          intentType: "AMBIGUOUS_PENDING",
+          slots: intent.slots,
+          clarificationType: "AMBIGUOUS_PENDING",
+        });
+        break;
+      }
+
+      case "PURCHASE_QUERY": {
+        replyText = formatPurchaseQueryMessage();
         break;
       }
 

@@ -254,6 +254,37 @@ export function extractProductSearch(
 
   cleaned = cleaned.replace(/\s+/g, " ").trim();
 
+  // Guard against non-product system/command keywords being treated as product searches
+  const blacklistedKeywords = new Set([
+    "pedido",
+    "pedidos",
+    "orden",
+    "ordenes",
+    "reposicion",
+    "reponer",
+    "stock",
+    "stock bajo",
+    "bajo",
+    "centro",
+    "jardin",
+    "deposito",
+    "deposito central",
+    "central",
+    "resumen",
+    "movimientos",
+    "ventas",
+    "ayuda",
+    "menu",
+    "hola",
+    "buenas",
+    "cuando llega",
+    "proximo pedido",
+  ]);
+
+  if (blacklistedKeywords.has(cleaned)) {
+    return {};
+  }
+
   // Return non-empty cleaned query
   if (cleaned.length >= 2) {
     return { productSearch: cleaned };
@@ -264,6 +295,25 @@ export function extractProductSearch(
 
 /**
  * Main intent router. Classifies user text into an intent with extracted slots.
+ * Strict priority order:
+ * 1. Numeric shortcuts (1, 2, 3, 4)
+ * 2. Greetings and Help
+ * 3. Specific arrival / future delivery questions
+ * 4. Purchase queries
+ * 5. Ambiguous pending queries ("¿Qué tengo pendiente?")
+ * 6. Specific order detail (#3)
+ * 7. Orders pending / by status
+ * 8. Orders list / recent ("¿Qué pedidos hay?", "Pedidos registrados")
+ * 9. Reposición semanal ("¿Qué productos hay que reponer?")
+ * 10. Stock bajo ("¿Qué productos tienen stock bajo en el Depósito Central?")
+ * 11. Stock alerts (sin stock, quiebres, negativo)
+ * 12. General branch stock overview
+ * 13. Metrics / comparison / summary
+ * 14. System health
+ * 15. Suppliers
+ * 16. Specific product stock search ("Stock alfajor")
+ * 17. Implicit product name search
+ * 18. Unknown fallback
  */
 export function parseUserMessage(text: string, referenceDate?: Date): ParsedIntent {
   const clean = cleanText(text);
@@ -280,7 +330,43 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     periodLabel: periodInfo.label,
   };
 
-  // 1. GREETINGS & HELP
+  // 1. MENU NUMERIC SHORTCUTS (1, 2, 3, 4)
+  if (/^1$/.test(clean)) {
+    return {
+      type: "STOCK_PRODUCT",
+      rawText: text,
+      slots: {
+        ...slots,
+        needsClarification: true,
+        clarificationType: "PRODUCT",
+        clarificationMessage:
+          "¿De qué producto querés consultar el stock? Podés escribir el nombre (ej. *Stock alfajor marplatense*) o el código (ej. *Stock artículo 1052*).",
+      },
+      confidence: 1.0,
+    };
+  }
+  if (/^2$/.test(clean)) {
+    return { type: "ORDERS_RECENT", rawText: text, slots, confidence: 1.0 };
+  }
+  if (/^3$/.test(clean)) {
+    return {
+      type: "REPLENISHMENT",
+      rawText: text,
+      slots: {
+        ...slots,
+        needsClarification: true,
+        clarificationType: "BRANCH",
+        clarificationMessage:
+          "Para consultar la reposición semanal sugerida, por favor indicame para qué sucursal querés verla: *Centro* o *Jardín*.",
+      },
+      confidence: 1.0,
+    };
+  }
+  if (/^4$/.test(clean)) {
+    return { type: "METRICS_SUMMARY", rawText: text, slots, confidence: 1.0 };
+  }
+
+  // 2. GREETINGS & HELP
   if (/^(hola|buenas|buen dia|buenas tardes|buenas noches|che|que tal|hola monica)\b/.test(clean) && clean.split(" ").length <= 4) {
     return { type: "GREETING", rawText: text, slots, confidence: 1.0 };
   }
@@ -288,78 +374,143 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     return { type: "HELP", rawText: text, slots, confidence: 1.0 };
   }
 
-  // 2. PEDIDO ESPECÍFICO (por número visible #3, etc.)
+  // 3. PRÓXIMOS PEDIDOS / FECHAS DE ENTREGA (Honest response)
+  if (/\b(cuando llega el proximo pedido|cuando llega el pedido|proximo pedido|cuando llega|fecha de llegada|proxima entrega|cuando entran|cuando llega la mercaderia)\b/.test(clean)) {
+    return { type: "NEXT_DELIVERY", rawText: text, slots, confidence: 0.95 };
+  }
+
+  // 4. CONSULTAS DE COMPRA (Explicar alcance)
+  if (/\b(cuanto tengo que comprar|que tengo que comprar|cuanto compro)\b/.test(clean)) {
+    return { type: "PURCHASE_QUERY", rawText: text, slots, confidence: 0.95 };
+  }
+
+  // 5. CONSULTAS AMBIGUAS ("¿Qué tengo pendiente?")
+  if (
+    /^(que tengo pendiente|que hay pendiente|cosas pendientes|pendientes)$/.test(clean) ||
+    /^(que esta pendiente|que tenemos pendiente)$/.test(clean)
+  ) {
+    return {
+      type: "AMBIGUOUS_PENDING",
+      rawText: text,
+      slots: {
+        ...slots,
+        needsClarification: true,
+        clarificationType: "AMBIGUOUS_PENDING",
+        clarificationMessage: "¿Querés consultar *pedidos pendientes* o productos que necesitan *reposición semanal*?",
+      },
+      confidence: 0.95,
+    };
+  }
+
+  // 6. PEDIDO ESPECÍFICO (por número visible #3, etc.)
   if (orderNumber !== undefined) {
     return { type: "ORDER_DETAIL", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 3. PEDIDOS PENDIENTES
+  // 7. PEDIDOS PENDIENTES / POR ESTADO
   if (
-    /\b(pedidos pendientes|siguen pendientes|que pedidos faltan|pendientes de preparacion|por preparar|por despachar|por recibir)\b/.test(clean)
+    /\b(pedidos pendientes|siguen pendientes|que pedidos faltan|pendientes de preparacion|por preparar|por despachar|por recibir|pedidos despachados|se despacharon|despachados|unidades se despacharon)\b/.test(clean)
   ) {
     return { type: "ORDERS_PENDING", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 4. ÚLTIMOS PEDIDOS / LISTA DE PEDIDOS
-  if (/\b(ultimos pedidos|ultimo pedido|pedidos de|ver pedidos|estado de pedidos|ordenes)\b/.test(clean)) {
-    return { type: "ORDERS_RECENT", rawText: text, slots, confidence: 0.9 };
+  // 8. LISTA DE PEDIDOS / ÚLTIMOS PEDIDOS (Resolves problem with "¿Qué pedidos hay?" / "Pedidos registrados")
+  if (
+    /\b(que pedidos hay|pedidos registrados|pedidos hay|cuales son los ultimos pedidos|ultimos pedidos|ultimo pedido|pedidos de|ver pedidos|estado de pedidos|ordenes|lista de pedidos|mostrame los pedidos|que pedidos)\b/.test(clean) ||
+    clean === "pedidos"
+  ) {
+    return { type: "ORDERS_RECENT", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 5. REPOSICIÓN
-  if (/\b(reposicion|reponer|necesitan reposicion|sugerencias de reposicion|sugerencia|a reponer)\b/.test(clean)) {
-    // If no branch was specified, prompt for Centro or Jardín
+  // 9. REPOSICIÓN SEMANAL
+  if (
+    /\b(reposicion semanal|que productos hay que reponer|que hay que reponer|que tengo que reponer|necesitan reposicion|sugerencias de reposicion|sugerencia|a reponer|reponer|reposicion)\b/.test(clean)
+  ) {
+    // If no branch was specified or user asked for Depósito, request clarification for Centro or Jardín
     if (branchInfo.target === "ALL" || branchInfo.target === "DEPOSITO") {
+      const msg =
+        branchInfo.target === "DEPOSITO"
+          ? "La reposición semanal se calcula para abastecer a las sucursales *Centro* o *Jardín* desde el Depósito Central. ¿Cuál querés consultar?"
+          : "Para consultar la reposición semanal sugerida, por favor indicame para qué sucursal querés verla: *Centro* o *Jardín*.";
       return {
         type: "REPLENISHMENT",
         rawText: text,
         slots: {
           ...slots,
           needsClarification: true,
-          clarificationMessage:
-            "Para consultar la reposición semanal sugerida, por favor indicame para qué sucursal querés verla: *Centro* o *Jardín*.",
+          clarificationType: "BRANCH",
+          clarificationMessage: msg,
         },
-        confidence: 0.9,
+        confidence: 0.95,
       };
     }
     return { type: "REPLENISHMENT", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 6. ALERTAS DE STOCK (Sin stock / Quiebres / Negativo)
+  // 10. STOCK BAJO / MENOR STOCK (Problem 1)
+  if (
+    /\b(stock bajo|bajo stock|poco stock|stock critico|critico de stock|menor stock|productos con bajo stock|productos tienen stock bajo|tienen stock bajo|escaso stock|stock escaso|productos con menor stock|articulos con stock bajo)\b/.test(clean)
+  ) {
+    if (branchInfo.target === "ALL") {
+      return {
+        type: "STOCK_LOW",
+        rawText: text,
+        slots: {
+          ...slots,
+          needsClarification: true,
+          clarificationType: "BRANCH",
+          clarificationMessage:
+            "¿Para qué sucursal querés consultar los productos con stock bajo? Podés indicar *Depósito Central*, *Centro* o *Jardín*.",
+        },
+        confidence: 0.95,
+      };
+    }
+    return { type: "STOCK_LOW", rawText: text, slots, confidence: 0.95 };
+  }
+
+  // 11. ALERTAS DE STOCK (Sin stock / Quiebres / Negativo)
   if (
     /\b(sin stock|faltantes|quiebre|quiebres|stock negativo|negativo|articulos en cero|productos sin stock)\b/.test(clean)
   ) {
     return { type: "STOCK_OUT_ALERT", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 7. COMPARACIÓN DE PERÍODOS
+  // 12. STOCK GENERAL POR SUCURSAL (sin producto específico)
+  if (
+    /\b(que stock hay en|como estamos de stock en|como estamos de stock)\b/.test(clean)
+  ) {
+    return { type: "STOCK_LOW", rawText: text, slots, confidence: 0.9 };
+  }
+
+  // 13. COMPARACIÓN DE PERÍODOS
   if (
     /\b(compara|comparame|comparacion|comparar|versus|vs|respecto al mes anterior)\b/.test(clean)
   ) {
     return { type: "METRICS_COMPARISON", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 8. MÁS VENDIDOS / TOP PRODUCTOS
+  // 14. MÁS VENDIDOS / TOP PRODUCTOS
   if (
     /\b(mas vendidos|top productos|top ventas|mas vendido|lo que mas sale|lo que mas se vende|ranking)\b/.test(clean)
   ) {
     return { type: "METRICS_TOP_PRODUCTS", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 9. RESUMEN / MÉTRICAS GENERALES
+  // 15. RESUMEN / MÉTRICAS GENERALES
   if (
     /\b(resumen|balance|metricas|movimientos del mes|como venimos|que paso durante|ventas de|evolucion)\b/.test(clean)
   ) {
     return { type: "METRICS_SUMMARY", rawText: text, slots, confidence: 0.9 };
   }
 
-  // 10. ESTADO DEL SISTEMA / SALUD DE DATOS
+  // 16. ESTADO DEL SISTEMA / SALUD DE DATOS
   if (
     /\b(sincronizacion|estado del sistema|salud de datos|actualizacion|freshness|cuando se actualizo)\b/.test(clean)
   ) {
     return { type: "SYSTEM_HEALTH", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 11. PROVEEDOR DE UN PRODUCTO O PRODUCTOS DE UN PROVEEDOR
+  // 17. PROVEEDORES
   if (
     /\b(de que proveedor es|proveedor de|que proveedor tiene|quien nos vende)\b/.test(clean)
   ) {
@@ -385,9 +536,9 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     };
   }
 
-  // 12. CONSULTA DIRECTA DE STOCK POR PRODUCTO O CÓDIGO
+  // 18. CONSULTA DIRECTA DE STOCK POR PRODUCTO O CÓDIGO
   if (
-    /\b(stock|cuanto hay|cuanto stock|tenes|queda|quedan|hay stock)\b/.test(clean) ||
+    /\b(stock|cuanto hay|cuanto stock|tenes|queda|quedan|hay stock|busca|buscar)\b/.test(clean) ||
     /\b(articulo|art|codigo)\s*\d+/.test(clean)
   ) {
     const productExtraction = extractProductSearch(text);
@@ -398,6 +549,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
         slots: {
           ...slots,
           needsClarification: true,
+          clarificationType: "PRODUCT",
           clarificationMessage:
             "¿De qué producto querés consultar el stock? Podés escribir el nombre (ej. *Stock alfajor marplatense*) o el código (ej. *Stock artículo 1052*).",
         },
@@ -412,7 +564,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     };
   }
 
-  // 13. SI EL USUARIO ESCRIBIÓ SOLO UN NOMBRE O CÓDIGO (Búsqueda implícita de stock)
+  // 19. SI EL USUARIO ESCRIBIÓ SOLO UN NOMBRE O CÓDIGO (Búsqueda implícita de stock)
   const implicitExtraction = extractProductSearch(text);
   if (implicitExtraction.articleId || (implicitExtraction.productSearch && implicitExtraction.productSearch.length >= 3)) {
     return {
@@ -423,7 +575,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     };
   }
 
-  // 14. DESCONOCIDO
+  // 20. DESCONOCIDO
   return {
     type: "UNKNOWN",
     rawText: text,

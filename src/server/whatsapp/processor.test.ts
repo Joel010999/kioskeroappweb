@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { processIncomingMessage } from "./processor";
 import { clearMemoryDeduplicationCache } from "./deduplication";
+import { clearAllPendingClarifications } from "./context";
 
 // Mock DB client to avoid network timeouts during unit tests
 vi.mock("@/server/db/client", () => ({
@@ -24,6 +25,15 @@ vi.mock("./queries", () => ({
       },
     ],
     totalFound: 1,
+  }),
+  queryLowStock: vi.fn().mockResolvedValue({
+    branchName: "Depósito Central",
+    branchId: 1,
+    total: 2,
+    items: [
+      { articleId: 1052, description: "Alfajor Havanna Chocolate", saldo: 0, stockStatus: "OUT_OF_STOCK" },
+      { articleId: 2001, description: "Caramelos Miel", saldo: 5, stockStatus: "AVAILABLE" },
+    ],
   }),
   queryStockAlerts: vi.fn().mockResolvedValue({
     branchName: "Centro",
@@ -158,6 +168,7 @@ describe("WhatsApp Message Processor Integration", () => {
 
   beforeEach(() => {
     clearMemoryDeduplicationCache();
+    clearAllPendingClarifications();
     sentReplies = [];
     vi.clearAllMocks();
   });
@@ -194,6 +205,23 @@ describe("WhatsApp Message Processor Integration", () => {
     expect(sentReplies[0].text).toContain("Centro:* 24 u.");
   });
 
+  it("processes low stock query in Depósito Central", async () => {
+    const result = await processIncomingMessage({
+      messageId: "wamid.AUTH_STOCK_LOW_01",
+      senderPhone: "5491112345678",
+      textBody: "¿Qué productos tienen stock bajo en el Depósito Central?",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.intent).toBe("STOCK_LOW");
+    expect(sentReplies.length).toBe(1);
+    expect(sentReplies[0].text).toContain("Productos con menor stock — Depósito Central");
+    expect(sentReplies[0].text).toContain("Alfajor Havanna Chocolate");
+    expect(sentReplies[0].text).toContain("0 u. ⚠️ (Sin stock)");
+  });
+
   it("processes order detail query by visible number #3", async () => {
     const result = await processIncomingMessage({
       messageId: "wamid.AUTH_ORDER_01",
@@ -210,20 +238,131 @@ describe("WhatsApp Message Processor Integration", () => {
     expect(sentReplies[0].text).toContain("Despachado");
   });
 
-  it("asks for clarification if replenishment branch is missing", async () => {
-    const result = await processIncomingMessage({
+  it("asks for clarification if replenishment branch is missing and retains context on answer", async () => {
+    // Turn 1: User asks without specifying branch
+    const turn1 = await processIncomingMessage({
       messageId: "wamid.AUTH_REPL_01",
       senderPhone: "5491112345678",
-      textBody: "Sugerencias de reposición",
+      textBody: "¿Qué productos hay que reponer esta semana?",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(turn1.processed).toBe(true);
+    expect(turn1.intent).toBe("REPLENISHMENT");
+    expect(sentReplies.length).toBe(1);
+    expect(sentReplies[0].text).toContain("Aclaración requerida");
+    expect(sentReplies[0].text).toContain("Centro");
+
+    // Turn 2: User responds with "centro"
+    const turn2 = await processIncomingMessage({
+      messageId: "wamid.AUTH_REPL_02",
+      senderPhone: "5491112345678",
+      textBody: "centro",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(turn2.processed).toBe(true);
+    expect(turn2.intent).toBe("REPLENISHMENT");
+    expect(sentReplies.length).toBe(2);
+    expect(sentReplies[1].text).toContain("Sugerencias de Reposición — Sucursal Centro");
+    expect(sentReplies[1].text).toContain("Alfajor Havanna");
+  });
+
+  it("allows cancelling a pending clarification", async () => {
+    // Turn 1: Trigger clarification
+    await processIncomingMessage({
+      messageId: "wamid.AUTH_REPL_CANCEL_01",
+      senderPhone: "5491112345678",
+      textBody: "Reposición semanal",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    // Turn 2: User says "cancelar"
+    const turn2 = await processIncomingMessage({
+      messageId: "wamid.AUTH_REPL_CANCEL_02",
+      senderPhone: "5491112345678",
+      textBody: "cancelar",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(turn2.processed).toBe(true);
+    expect(turn2.intent).toBe("CANCELLED");
+    expect(sentReplies.length).toBe(2);
+    expect(sentReplies[1].text).toContain("Operación cancelada");
+  });
+
+  it("preempts a pending clarification when user sends a full new query", async () => {
+    // Turn 1: Trigger clarification
+    await processIncomingMessage({
+      messageId: "wamid.AUTH_PREEMPT_01",
+      senderPhone: "5491112345678",
+      textBody: "Reposición semanal",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    // Turn 2: User asks a completely different full query
+    const turn2 = await processIncomingMessage({
+      messageId: "wamid.AUTH_PREEMPT_02",
+      senderPhone: "5491112345678",
+      textBody: "¿Qué pedidos hay?",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(turn2.processed).toBe(true);
+    expect(turn2.intent).toBe("ORDERS_RECENT");
+    expect(sentReplies.length).toBe(2);
+    expect(sentReplies[1].text).toContain("Últimos Pedidos Registrados");
+  });
+
+  it("handles ambiguous pending query and resolves on user reply", async () => {
+    // Turn 1: "¿Qué tengo pendiente?"
+    const turn1 = await processIncomingMessage({
+      messageId: "wamid.AUTH_AMBIGUOUS_01",
+      senderPhone: "5491112345678",
+      textBody: "¿Qué tengo pendiente?",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(turn1.processed).toBe(true);
+    expect(turn1.intent).toBe("AMBIGUOUS_PENDING");
+    expect(sentReplies[0].text).toContain("pedidos pendientes");
+    expect(sentReplies[0].text).toContain("reposición semanal");
+
+    // Turn 2: User replies "pedidos"
+    const turn2 = await processIncomingMessage({
+      messageId: "wamid.AUTH_AMBIGUOUS_02",
+      senderPhone: "5491112345678",
+      textBody: "pedidos",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(turn2.processed).toBe(true);
+    expect(turn2.intent).toBe("ORDERS_PENDING");
+    expect(sentReplies.length).toBe(2);
+    expect(sentReplies[1].text).toContain("Pedidos Pendientes");
+  });
+
+  it("answers next delivery query honestly without fabricating dates", async () => {
+    const result = await processIncomingMessage({
+      messageId: "wamid.AUTH_NEXT_DELIVERY_01",
+      senderPhone: "5491112345678",
+      textBody: "¿Cuándo llega el próximo pedido?",
       configuredAllowedEnv: allowedNumbers,
       sendMessageFn: mockSend,
     });
 
     expect(result.processed).toBe(true);
-    expect(result.intent).toBe("REPLENISHMENT");
+    expect(result.intent).toBe("NEXT_DELIVERY");
     expect(sentReplies.length).toBe(1);
-    expect(sentReplies[0].text).toContain("Aclaración requerida");
-    expect(sentReplies[0].text).toContain("Centro");
+    expect(sentReplies[0].text).toContain("Todavía no tengo una fecha de llegada confirmada");
   });
 
   it("skips duplicate messages by messageId without sending duplicate replies", async () => {
@@ -282,6 +421,6 @@ describe("WhatsApp Message Processor Integration", () => {
     expect(result.intent).toBe("GREETING");
     expect(sentReplies.length).toBe(1);
     expect(sentReplies[0].to).toBe("241852951711822@lid");
-    expect(sentReplies[0].text).toContain("¡Hola Mónica!");
+    expect(sentReplies[0].text).toContain("¡Hola, Mónica!");
   });
 });
