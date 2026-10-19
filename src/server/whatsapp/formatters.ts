@@ -1,6 +1,7 @@
 import type { ProductStockItem } from "./queries";
 import type { BranchTarget } from "./types";
 import type { Order } from "@/server/orders/repository";
+import { formatRubroLabel } from "./router";
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return "No registrada";
@@ -556,7 +557,83 @@ export function formatUnknownMessage(): string {
     "• *1. Stock:* _«Stock alfajor»_, _«Art 1052»_, _«Stock bajo en Depósito Central»_\n" +
     "• *2. Pedidos:* _«¿Qué pedidos hay?»_, _«Pedidos pendientes»_, _«Detalle del pedido 2»_\n" +
     "• *3. Reposición:* _«Reposición semanal»_, _«Reposición Centro»_, _«Reposición Jardín»_\n" +
+    "• *Excel de reposición:* _«Mandame un Excel con la reposición de Chocolates»_\n" +
     "• *4. Resumen:* _«Resumen del negocio»_, _«¿Cómo estamos de stock?»_\n\n" +
     "_Escribí `ayuda` para ver las opciones completas o haceme una pregunta directa._"
   );
+}
+
+/**
+ * Formats caption for replenishment Excel document sent via WhatsApp.
+ */
+export function formatReplenishmentExcelCaption(params: {
+  rubro: string;
+  branchName: string;
+  totalEligible: number;
+  planningDate: string;
+  negativeStockCount: number;
+  negativeStockProducts?: Array<{
+    articleId: number;
+    description: string | null;
+    currentStock: number;
+  }>;
+}): string {
+  const { rubro, branchName, totalEligible, planningDate, negativeStockCount, negativeStockProducts } = params;
+  const rubroLabel = formatRubroLabel(rubro);
+  const lines: string[] = [
+    `📊 *Planilla de Reposición — ${rubroLabel}*`,
+    `📍 *Sucursal:* ${branchName}`,
+    `📅 *Planificación:* ${planningDate}`,
+    `📦 *Productos a pedir:* ${totalEligible}`,
+  ];
+
+  if (negativeStockCount > 0) {
+    lines.push(
+      `\n⚠️ *Atención:* Se detectaron *${negativeStockCount} producto${negativeStockCount === 1 ? "" : "s"} con stock negativo* en el local. No fueron incluidos con cantidad automática y requieren revisión manual.`
+    );
+    if (negativeStockProducts && negativeStockProducts.length > 0) {
+      const preview = negativeStockProducts.slice(0, 3);
+      for (const p of preview) {
+        lines.push(`• Art. \`${p.articleId}\` — ${p.description ?? "Sin descripción"} (Stock: *${p.currentStock}*)`);
+      }
+      if (negativeStockProducts.length > 3) {
+        lines.push(`_... y ${negativeStockProducts.length - 3} producto(s) más con saldo negativo._`);
+      }
+    }
+  }
+
+  return lines.join("\n").trim();
+}
+
+/**
+ * Formats message when a replenishment Excel query returns 0 eligible products.
+ */
+export function formatReplenishmentExcelEmptyMessage(params: {
+  rubro: string;
+  branchName: string;
+  negativeStockCount: number;
+  negativeStockProducts?: Array<{
+    articleId: number;
+    description: string | null;
+    currentStock: number;
+  }>;
+}): string {
+  const { rubro, branchName, negativeStockCount, negativeStockProducts } = params;
+  const rubroLabel = formatRubroLabel(rubro);
+  let text = `ℹ️ *Reposición — ${rubroLabel} (${branchName})*\n\nNo hay productos con necesidad de reposición en este rubro (todos los artículos cuentan con stock suficiente para cubrir la demanda proyectada).`;
+
+  if (negativeStockCount > 0) {
+    text += `\n\n⚠️ *Atención:* Hay *${negativeStockCount} producto${negativeStockCount === 1 ? "" : "s"} con stock negativo* que requieren revisión manual en la sucursal:`;
+    if (negativeStockProducts && negativeStockProducts.length > 0) {
+      const preview = negativeStockProducts.slice(0, 3);
+      for (const p of preview) {
+        text += `\n• Art. \`${p.articleId}\` — ${p.description ?? "Sin descripción"} (Stock: *${p.currentStock}*)`;
+      }
+      if (negativeStockProducts.length > 3) {
+        text += `\n_... y ${negativeStockProducts.length - 3} producto(s) más con saldo negativo._`;
+      }
+    }
+  }
+
+  return text;
 }

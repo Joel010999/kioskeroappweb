@@ -5,6 +5,7 @@ export type IntentType =
   | "STOCK_LOW"
   | "STOCK_OUT_ALERT"
   | "REPLENISHMENT"
+  | "REPLENISHMENT_EXCEL"
   | "ORDERS_RECENT"
   | "ORDER_DETAIL"
   | "ORDERS_PENDING"
@@ -31,11 +32,13 @@ export type ParsedSlots = {
   orderNumber?: number;
   supplierSearch?: string;
   rubroSearch?: string;
+  targetRubro?: string;
+  wantsExcel?: boolean;
   periodType?: "today" | "yesterday" | "this_week" | "this_month" | "last_month" | "named_month" | "custom";
   period?: Period;
   periodLabel?: string;
   needsClarification?: boolean;
-  clarificationType?: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING";
+  clarificationType?: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING" | "RUBRO";
   clarificationMessage?: string;
   pendingIntentType?: IntentType;
 };
@@ -56,9 +59,25 @@ export type WhatsAppSenderContext = {
   branchId?: number;
 };
 
-
 export type SendMessageResult = {
   success: boolean;
   messageId?: string;
   error?: string;
 };
+
+export type SendDocumentOptions = {
+  document: Buffer;
+  fileName: string;
+  mimetype?: string;
+  caption?: string;
+};
+
+export type MessageSender = (
+  to: string,
+  text: string
+) => Promise<SendMessageResult>;
+
+export type DocumentSender = (
+  to: string,
+  doc: SendDocumentOptions
+) => Promise<SendMessageResult>;

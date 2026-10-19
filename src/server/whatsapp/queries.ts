@@ -4,6 +4,12 @@ import { getAttention, getDataHealth, getOverview, getStock, getTopProducts } fr
 import { getOrder, listOrders, listWarehouseOrders } from "@/server/orders/repository";
 import { DEPOT_BRANCH_ID, getWeeklyReplenishment } from "@/server/analytics/weekly-replenishment";
 import { getSourceForBranch } from "@/server/auth/sources";
+import {
+  generateReplenishmentExcelBuffer,
+  isEligibleForReplenishmentExcel,
+  type ReplenishmentExportItem,
+} from "@/features/excel/order-export";
+import { resolveRubroName } from "@/server/catalog/rubros";
 import type { BranchTarget } from "./types";
 
 const DEFAULT_ORG_ID = 1;
@@ -308,10 +314,12 @@ export async function queryStockAlerts(
  * Queries weekly replenishment suggestions for Centro or Jardín.
  */
 export async function queryReplenishment(
-  branchId: number
+  branchId: number,
+  targetRubro?: string
 ): Promise<{
   branchName: string;
   planningDate: string;
+  rubro?: string;
   items: Array<{
     articleId: number;
     description: string;
@@ -331,6 +339,7 @@ export async function queryReplenishment(
     scope,
     depotSourceId: depotScope.sourceId,
     planningDate,
+    rubro: targetRubro,
     filter: "TO_REPLENISH",
     limit: 10,
     offset: 0,
@@ -341,6 +350,7 @@ export async function queryReplenishment(
   return {
     branchName,
     planningDate,
+    rubro: targetRubro,
     items: replenishment.items.map((row) => ({
       articleId: row.article_id,
       description: row.description ?? `Artículo ${row.article_id}`,
@@ -351,6 +361,125 @@ export async function queryReplenishment(
       status: row.status,
     })),
     totalSuggested: replenishment.total,
+  };
+}
+
+export type ReplenishmentExcelQueryResult = {
+  branchName: string;
+  branchId: number;
+  planningDate: string;
+  rubro: string;
+  totalEligible: number;
+  negativeStockCount: number;
+  negativeStockProducts?: Array<{
+    articleId: number;
+    description: string | null;
+    currentStock: number;
+  }>;
+  excelBuffer: Buffer | null;
+  items: ReplenishmentExportItem[];
+};
+
+/**
+ * Queries all replenishment items for a rubro and branch without truncation (limit: 5000),
+ * separates items with negative stock requiring manual review, applies mandatory export
+ * eligibility rules, and generates the .xlsx binary buffer using existing export logic.
+ */
+export async function queryReplenishmentExcelData(
+  branchId: number,
+  rubro: string
+): Promise<ReplenishmentExcelQueryResult> {
+  const scope = await resolveScope(branchId);
+  const depotScope = await resolveScope(DEPOT_BRANCH_ID);
+  const planningDate = "2026-10-24";
+  const branchName = branchId === 2 ? "Centro" : branchId === 3 ? "Jardín" : `Sucursal ${branchId}`;
+
+  // Query all items for this rubro across all pages without silent truncation
+  const replenishment = await getWeeklyReplenishment({
+    scope,
+    depotSourceId: depotScope.sourceId,
+    planningDate,
+    rubro,
+    filter: "TO_REPLENISH",
+    limit: 5000,
+    offset: 0,
+  });
+
+  let negativeStockCount = 0;
+  const negativeStockProducts: Array<{
+    articleId: number;
+    description: string | null;
+    currentStock: number;
+  }> = [];
+  const eligibleExportItems: ReplenishmentExportItem[] = [];
+  const seen = new Set<number>();
+
+  for (const item of replenishment.items) {
+    if (seen.has(item.article_id)) continue;
+    seen.add(item.article_id);
+
+    // Negative stock tracking: do NOT fabricate quantities for negative stock products
+    if (item.stock_current < 0 || item.status === "NEGATIVE_STOCK") {
+      negativeStockCount++;
+      negativeStockProducts.push({
+        articleId: item.article_id,
+        description: item.description,
+        currentStock: item.stock_current,
+      });
+    }
+
+    // Differentiate clearly: requested_quantity is the intended order quantity,
+    // which for initial suggestion equals suggested_quantity (or 0 if negative/null)
+    const requested = item.requested_quantity > 0 ? item.requested_quantity : (item.suggested_quantity ?? 0);
+    const resolvedRubro = resolveRubroName(item.classification_code, item.rubro) || rubro;
+
+    // Apply mandatory export eligibility rule: incluirEnExcel = seleccionado && cantidadSolicitada > 0
+    if (
+      isEligibleForReplenishmentExcel({
+        selected: true,
+        requestedQuantity: requested,
+      })
+    ) {
+      eligibleExportItems.push({
+        article_id: item.article_id,
+        description: item.description,
+        rubro: resolvedRubro,
+        classification_code: item.classification_code,
+        stock_current: item.stock_current,
+        stock_depot: item.stock_depot,
+        suggested_quantity: item.suggested_quantity,
+        requested_quantity: requested,
+        supply_mode: item.supply_mode,
+        supplier_code: item.supplier_code,
+        unit_measure: item.unit_measure,
+        package_units: item.package_units,
+        presentation: item.presentation,
+        presentation_display: item.presentation_display,
+        selected: true,
+      });
+    }
+  }
+
+  let excelBuffer: Buffer | null = null;
+  if (eligibleExportItems.length > 0) {
+    excelBuffer = generateReplenishmentExcelBuffer({
+      items: eligibleExportItems,
+      branchLabel: branchName,
+      planningDate,
+      title: `Pedido a Depósito - ${rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro}`,
+    });
+  }
+
+  return {
+    branchName,
+    branchId,
+    planningDate,
+    rubro: rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro,
+    totalEligible: eligibleExportItems.length,
+    negativeStockCount,
+    negativeStockProducts,
+    excelBuffer,
+    items: eligibleExportItems,
   };
 }
 

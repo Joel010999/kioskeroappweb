@@ -175,7 +175,7 @@ async function startSocket() {
       onConnectionOpen: () => {
         logger.info("WhatsApp bot is connected and ready to receive messages.");
         if (activeWorker) {
-          registerActiveSender(activeWorker.sendMessage);
+          registerActiveSender(activeWorker.sendMessage, activeWorker.sendDocument);
         }
       },
       onConnectionClose: async (shouldReconnect, statusCode) => {

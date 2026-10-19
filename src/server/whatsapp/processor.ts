@@ -20,6 +20,8 @@ import {
   formatProductSupplierResponse,
   formatPurchaseQueryMessage,
   formatRecentOrdersResponse,
+  formatReplenishmentExcelCaption,
+  formatReplenishmentExcelEmptyMessage,
   formatReplenishmentResponse,
   formatStockAlertsResponse,
   formatStockResponse,
@@ -38,12 +40,13 @@ import {
   queryProductSupplier,
   queryRecentOrders,
   queryReplenishment,
+  queryReplenishmentExcelData,
   queryStockAlerts,
   querySupplierProducts,
   querySystemHealthStatus,
   queryTopProductsMetrics,
 } from "./queries";
-import { sendWhatsAppMessage } from "./client";
+import { sendWhatsAppDocument, sendWhatsAppMessage } from "./client";
 
 export type ProcessMessageInput = {
   messageId: string;
@@ -53,6 +56,7 @@ export type ProcessMessageInput = {
   senderName?: string;
   configuredAllowedEnv?: string;
   sendMessageFn?: typeof sendWhatsAppMessage;
+  sendDocumentFn?: typeof sendWhatsAppDocument;
 };
 
 export type ProcessMessageResult = {
@@ -73,6 +77,7 @@ export async function processIncomingMessage(
   const { messageId, senderPhone, textBody = "", senderName } = input;
   const replyTarget = input.replyTo || senderPhone;
   const sendFn = input.sendMessageFn ?? sendWhatsAppMessage;
+  const sendDocFn = input.sendDocumentFn ?? sendWhatsAppDocument;
 
   // 1. Deduplication check
   const isNew = await registerIncomingMessage(messageId, senderPhone);
@@ -189,8 +194,60 @@ export async function processIncomingMessage(
 
       case "REPLENISHMENT": {
         const branchId = intent.slots.branchId || 2;
-        const replData = await queryReplenishment(branchId);
+        const replData = await queryReplenishment(branchId, intent.slots.targetRubro);
         replyText = formatReplenishmentResponse(replData);
+        break;
+      }
+
+      case "REPLENISHMENT_EXCEL": {
+        const branchId = intent.slots.branchId || 2;
+        const targetRubro = intent.slots.targetRubro || "CHOCOLATES";
+        const excelData = await queryReplenishmentExcelData(branchId, targetRubro);
+
+        if (!excelData.excelBuffer || excelData.totalEligible === 0) {
+          replyText = formatReplenishmentExcelEmptyMessage({
+            rubro: excelData.rubro,
+            branchName: excelData.branchName,
+            negativeStockCount: excelData.negativeStockCount,
+            negativeStockProducts: excelData.negativeStockProducts,
+          });
+        } else {
+          const cleanRubro = excelData.rubro.replace(/\s+/g, "_").toUpperCase();
+          const cleanBranch = excelData.branchName.replace(/\s+/g, "_").toUpperCase();
+          const fileName = `REPOSICION_${cleanRubro}_${cleanBranch}_${excelData.planningDate}.xlsx`;
+          const caption = formatReplenishmentExcelCaption({
+            rubro: excelData.rubro,
+            branchName: excelData.branchName,
+            totalEligible: excelData.totalEligible,
+            planningDate: excelData.planningDate,
+            negativeStockCount: excelData.negativeStockCount,
+            negativeStockProducts: excelData.negativeStockProducts,
+          });
+
+          console.log(
+            `[WHATSAPP PROCESSOR] Sending Excel document: ${fileName} to ${maskPhone(replyTarget)}`
+          );
+
+          const docSendRes = await sendDocFn(replyTarget, {
+            document: excelData.excelBuffer,
+            fileName,
+            mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            caption,
+          });
+
+          if (!docSendRes.success) {
+            throw new Error(docSendRes.error || "Error al enviar documento por WhatsApp");
+          }
+
+          console.log(`[WHATSAPP PROCESSOR] Excel document dispatch result: success=true`);
+          await markMessageProcessed(messageId, intent.type);
+
+          return {
+            processed: true,
+            intent: intent.type,
+            replyText: caption,
+          };
+        }
         break;
       }
 

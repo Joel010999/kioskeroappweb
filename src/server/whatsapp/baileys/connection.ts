@@ -9,6 +9,7 @@ import pino from "pino";
 import { initPostgresAuthState, saveEncryptedPairingCode, clearEncryptedPairingCode } from "./auth-state";
 import { normalizePhoneNumber, getPhoneVariants, maskPhone } from "../auth";
 import { processIncomingMessage } from "../processor";
+import type { SendDocumentOptions, SendMessageResult } from "../types";
 
 export type BaileysWorkerConfig = {
   sessionId?: string;
@@ -25,7 +26,8 @@ export type ActiveBaileysWorker = {
   socket: WASocket;
   saveCreds: () => Promise<void>;
   stop: () => Promise<void>;
-  sendMessage: (to: string, text: string) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+  sendMessage: (to: string, text: string) => Promise<SendMessageResult>;
+  sendDocument: (to: string, doc: SendDocumentOptions) => Promise<SendMessageResult>;
 };
 
 /**
@@ -276,6 +278,55 @@ export async function startBaileysWorker(
     }
   };
 
+  // 3b. Document sender helper for Excel and other attachments
+  const sendDocument = async (
+    to: string,
+    doc: SendDocumentOptions
+  ): Promise<SendMessageResult> => {
+    try {
+      let jid = (to || "").trim();
+      if (!jid.includes("@")) {
+        const cleanTo = normalizePhoneNumber(jid);
+        const variants = getPhoneVariants(cleanTo);
+        const pn = variants.find((v) => v.startsWith("549")) || cleanTo;
+        jid = `${pn}@s.whatsapp.net`;
+      }
+
+      logger.info(
+        { recipient: maskPhone(jid), fileName: doc.fileName, sizeBytes: doc.document?.length },
+        "[WHATSAPP BOT] Sending outgoing document via Baileys..."
+      );
+
+      const res = await sock.sendMessage(jid, {
+        document: doc.document,
+        mimetype: doc.mimetype || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        fileName: doc.fileName,
+        caption: doc.caption,
+      });
+
+      if (res?.key?.id) {
+        sentByBotMessageIds.add(res.key.id);
+        if (sentByBotMessageIds.size > 500) {
+          const oldest = sentByBotMessageIds.values().next().value;
+          if (oldest) sentByBotMessageIds.delete(oldest);
+        }
+      }
+
+      logger.info(
+        { recipient: maskPhone(jid), messageId: res?.key?.id, fileName: doc.fileName },
+        "[WHATSAPP BOT] Document sent successfully via Baileys."
+      );
+      return { success: true, messageId: res?.key?.id ?? undefined };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Send document failed";
+      logger.error(
+        { err, recipient: maskPhone(to), fileName: doc.fileName },
+        "[WHATSAPP BOT] Failed to send document via Baileys."
+      );
+      return { success: false, error: message };
+    }
+  };
+
   // 4. Incoming messages listener
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     logger.info(
@@ -376,6 +427,7 @@ export async function startBaileysWorker(
         senderName,
         configuredAllowedEnv: config.allowedNumbersEnv,
         sendMessageFn: async (to, text) => sendMessage(to, text),
+        sendDocumentFn: async (to, doc) => sendDocument(to, doc),
       });
     }
   });
@@ -398,5 +450,6 @@ export async function startBaileysWorker(
     saveCreds,
     stop,
     sendMessage,
+    sendDocument,
   };
 }

@@ -1,11 +1,11 @@
 import type { IntentType, ParsedSlots, ParsedIntent } from "./types";
 import { normalizePhoneNumber } from "./auth";
-import { extractBranch, extractProductSearch, parseUserMessage } from "./router";
+import { extractBranch, extractProductSearch, parseUserMessage, resolveCanonicalRubroFromText } from "./router";
 
 export type PendingClarification = {
   intentType: IntentType;
   slots: ParsedSlots;
-  clarificationType: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING";
+  clarificationType: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING" | "RUBRO";
   createdAt: number;
 };
 
@@ -20,7 +20,7 @@ export function setPendingClarification(
   clarification: {
     intentType: IntentType;
     slots: ParsedSlots;
-    clarificationType: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING";
+    clarificationType: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING" | "RUBRO";
   }
 ): void {
   const key = normalizePhoneNumber(senderPhone);
@@ -154,6 +154,43 @@ export function resolvePendingClarification(
       type: "RE_PROMPT",
       message:
         "Por favor indicá para qué sucursal querés consultar: *Centro*, *Jardín* o *Depósito Central* (o escribí 'cancelar' para salir).",
+    };
+  }
+
+  if (pending.clarificationType === "RUBRO") {
+    const rubroInfo = resolveCanonicalRubroFromText(text);
+    if (rubroInfo.canonical) {
+      clearPendingClarification(senderPhone);
+
+      const updatedSlots: ParsedSlots = {
+        ...pending.slots,
+        targetRubro: rubroInfo.canonical,
+        needsClarification: false,
+        clarificationMessage: undefined,
+      };
+
+      return {
+        type: "RESOLVED",
+        intent: {
+          type: pending.intentType,
+          rawText: text,
+          slots: updatedSlots,
+          confidence: 0.95,
+        },
+      };
+    }
+
+    // Check if the user entered a fresh full query instead of answering the clarification
+    const freshIntent = parseUserMessage(text);
+    if (freshIntent.type !== "UNKNOWN" && freshIntent.type !== "HELP" && freshIntent.type !== "GREETING") {
+      clearPendingClarification(senderPhone);
+      return { type: "NEW_INTENT" };
+    }
+
+    return {
+      type: "RE_PROMPT",
+      message:
+        "Por favor indicá un rubro válido (ej. *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, etc.) o escribí 'cancelar' para salir.",
     };
   }
 
