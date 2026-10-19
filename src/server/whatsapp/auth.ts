@@ -2,8 +2,27 @@ import type { WhatsAppSenderContext } from "./types";
 import { query } from "@/server/db/client";
 
 /**
- * Normalizes a phone number to digits only, with special handling for Argentine numbers.
- * In Argentina, mobile WhatsApp numbers often use country code + 9 + area code (e.g., 54911...).
+ * Masks a phone number or JID for privacy and security in logs (e.g. 549***6480).
+ * Never exposes full credentials or phone identifiers.
+ */
+export function maskPhone(raw: string | null | undefined): string {
+  if (!raw) return "unknown";
+  const str = raw.trim();
+  if (str.length <= 6) return "***";
+  const atIdx = str.indexOf("@");
+  if (atIdx !== -1) {
+    const user = str.slice(0, atIdx);
+    const domain = str.slice(atIdx);
+    if (user.length <= 6) return `***${domain}`;
+    return `${user.slice(0, 3)}***${user.slice(-4)}${domain}`;
+  }
+  return `${str.slice(0, 3)}***${str.slice(-4)}`;
+}
+
+/**
+ * Normalizes a phone number to digits only, with robust handling for Argentine numbers.
+ * In Argentina, mobile numbers in WhatsApp use 54 + 9 + area code (2-4 digits) + subscriber (6-8 digits).
+ * Handles stripping mobile '15' prefix across all Argentine area codes (11, 388, 351, 387, etc.).
  */
 export function normalizePhoneNumber(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -11,31 +30,53 @@ export function normalizePhoneNumber(raw: string | null | undefined): string {
   // Strip non-digits
   let digits = raw.replace(/\D/g, "");
 
-  // If starts with leading zeros (e.g. 011), strip them
+  // Strip leading zeros (e.g. 011 or 0388)
   while (digits.startsWith("0")) {
     digits = digits.slice(1);
   }
 
-  // If local Argentine number (e.g., 11xxxxxxxx or 911xxxxxxxx), prepend 54
+  // Handle local mobile with '15' prefix after area code (total 12 digits, e.g. 388 15 5196480)
+  if (digits.length === 12 && !digits.startsWith("54")) {
+    for (const areaLen of [2, 3, 4]) {
+      if (digits.slice(areaLen, areaLen + 2) === "15") {
+        digits = `${digits.slice(0, areaLen)}${digits.slice(areaLen + 2)}`;
+        break;
+      }
+    }
+  }
+
+  // Handle international numbers with '15' prefix after area code:
+  // e.g. 54 9 11 15 xxxxxxxx (15 digits) or 54 11 15 xxxxxxxx (14 digits)
+  if (digits.startsWith("549") && digits.length === 15) {
+    for (const areaLen of [2, 3, 4]) {
+      if (digits.slice(3 + areaLen, 3 + areaLen + 2) === "15") {
+        digits = `549${digits.slice(3, 3 + areaLen)}${digits.slice(3 + areaLen + 2)}`;
+        break;
+      }
+    }
+  } else if (digits.startsWith("54") && !digits.startsWith("549") && digits.length === 14) {
+    for (const areaLen of [2, 3, 4]) {
+      if (digits.slice(2 + areaLen, 2 + areaLen + 2) === "15") {
+        digits = `54${digits.slice(2, 2 + areaLen)}${digits.slice(2 + areaLen + 2)}`;
+        break;
+      }
+    }
+  }
+
+  // Prepend Argentina country code 54 if missing:
+  // 10 digits = local Argentine number (area code + subscriber) -> prepend 54
   if (digits.length === 10 && !digits.startsWith("54")) {
     digits = `54${digits}`;
   } else if (digits.length === 11 && digits.startsWith("9") && !digits.startsWith("54")) {
+    // 9 + 10 digits -> prepend 54 -> 549...
     digits = `54${digits}`;
-  }
-
-  // Remove mobile '15' prefix if inserted after area code (e.g. 54 11 15 xxxxxxxx -> 54 11 xxxxxxxx)
-  // Common in manual Argentine entries
-  if (digits.startsWith("541115") && digits.length === 12) {
-    digits = `5411${digits.slice(6)}`;
-  } else if (digits.startsWith("5491115") && digits.length === 13) {
-    digits = `54911${digits.slice(7)}`;
   }
 
   return digits;
 }
 
 /**
- * Generates alternate valid representations for a number (e.g. 54911... <-> 5411...)
+ * Generates alternate valid representations for a number (e.g. 54911... <-> 5411... <-> 11...)
  * to ensure formatting variations don't lock out authorized users.
  */
 export function getPhoneVariants(normalized: string): string[] {
@@ -46,9 +87,17 @@ export function getPhoneVariants(normalized: string): string[] {
   if (normalized.startsWith("549") && normalized.length >= 12) {
     // 54911xxxx -> 5411xxxx
     variants.add(`54${normalized.slice(3)}`);
+    // 10-digit national number
+    variants.add(normalized.slice(3));
   } else if (normalized.startsWith("54") && !normalized.startsWith("549") && normalized.length >= 11) {
     // 5411xxxx -> 54911xxxx
     variants.add(`549${normalized.slice(2)}`);
+    // 10-digit national number
+    variants.add(normalized.slice(2));
+  } else if (normalized.length === 10 && !normalized.startsWith("54")) {
+    // 10-digit national number: 3885196480 -> 543885196480 and 5493885196480
+    variants.add(`54${normalized}`);
+    variants.add(`549${normalized}`);
   }
 
   return Array.from(variants);
@@ -68,9 +117,13 @@ export async function isAuthorizedSender(
   const senderVariants = getPhoneVariants(normalizedSender);
 
   // 1. Check environment variable list
-  const allowedEnv = configuredAllowedEnv ?? process.env.WHATSAPP_ALLOWED_NUMBERS ?? "";
+  const allowedEnv = (configuredAllowedEnv ?? process.env.WHATSAPP_ALLOWED_NUMBERS ?? "").trim();
+  if (allowedEnv === "*") {
+    return true;
+  }
+
   const allowedFromEnv = allowedEnv
-    .split(",")
+    .split(/[,;\n]+/)
     .map((num) => normalizePhoneNumber(num.trim()))
     .filter((num) => num.length > 0);
 

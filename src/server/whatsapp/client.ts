@@ -27,8 +27,9 @@ export async function sendWhatsAppMessage(
   to: string,
   text: string
 ): Promise<SendMessageResult> {
-  const normalizedTo = normalizePhoneNumber(to);
-  if (!normalizedTo) {
+  const cleanTo = (to || "").trim();
+  const destination = cleanTo.includes("@") ? cleanTo : normalizePhoneNumber(cleanTo);
+  if (!destination) {
     return {
       success: false,
       error: "Recipient phone number is invalid.",
@@ -43,7 +44,7 @@ export async function sendWhatsAppMessage(
   }
 
   try {
-    return await activeSender(normalizedTo, text);
+    return await activeSender(destination, text);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown send error";
     return {

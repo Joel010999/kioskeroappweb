@@ -267,4 +267,21 @@ describe("WhatsApp Message Processor Integration", () => {
     expect(sentReplies[0].text).toContain("Resumen Operativo");
     expect(sentReplies[0].text).toContain("Unidades netas vendidas");
   });
+
+  it("dispatches replies to replyTo destination when provided (e.g. LID conversation JID)", async () => {
+    const result = await processIncomingMessage({
+      messageId: "wamid.AUTH_REPLY_TO_01",
+      senderPhone: "5491112345678",
+      replyTo: "241852951711822@lid",
+      textBody: "Hola",
+      configuredAllowedEnv: allowedNumbers,
+      sendMessageFn: mockSend,
+    });
+
+    expect(result.processed).toBe(true);
+    expect(result.intent).toBe("GREETING");
+    expect(sentReplies.length).toBe(1);
+    expect(sentReplies[0].to).toBe("241852951711822@lid");
+    expect(sentReplies[0].text).toContain("¡Hola Mónica!");
+  });
 });

@@ -161,6 +161,13 @@ async function startSocket() {
     logger.info("[WHATSAPP DAEMON DIAGNOSTIC] Found registered session credentials in PostgreSQL. Resuming connection...");
     logger.info("Connecting to WhatsApp via Baileys...");
 
+    const allowedEnv = process.env.WHATSAPP_ALLOWED_NUMBERS;
+    const allowedCount = allowedEnv ? allowedEnv.split(/[,;\n]+/).filter(Boolean).length : 0;
+    logger.info(
+      { allowedCount, hasAllowedEnv: Boolean(allowedEnv) },
+      `[WHATSAPP DAEMON] Allowed senders filter configured with ${allowedCount} entries.`
+    );
+
     activeWorker = await startBaileysWorker({
       sessionId: "default",
       allowedNumbersEnv: process.env.WHATSAPP_ALLOWED_NUMBERS,

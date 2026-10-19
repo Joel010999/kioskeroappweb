@@ -1,4 +1,4 @@
-import { getSenderContext } from "./auth";
+import { getSenderContext, maskPhone } from "./auth";
 import { registerIncomingMessage, markMessageProcessed, markMessageFailed } from "./deduplication";
 import { parseUserMessage } from "./router";
 import {
@@ -37,6 +37,7 @@ import { sendWhatsAppMessage } from "./client";
 export type ProcessMessageInput = {
   messageId: string;
   senderPhone: string;
+  replyTo?: string;
   textBody?: string;
   senderName?: string;
   configuredAllowedEnv?: string;
@@ -59,30 +60,44 @@ export async function processIncomingMessage(
   input: ProcessMessageInput
 ): Promise<ProcessMessageResult> {
   const { messageId, senderPhone, textBody = "", senderName } = input;
+  const replyTarget = input.replyTo || senderPhone;
   const sendFn = input.sendMessageFn ?? sendWhatsAppMessage;
 
   // 1. Deduplication check
   const isNew = await registerIncomingMessage(messageId, senderPhone);
   if (!isNew) {
+    console.log(`[WHATSAPP PROCESSOR] Message id=${messageId} already processed (duplicate). Skipping.`);
     return { processed: false, duplicate: true };
   }
 
+  console.log(`[WHATSAPP PROCESSOR] Processing message id=${messageId} from ${maskPhone(senderPhone)}`);
+
   // 2. Authorization check
   const senderContext = await getSenderContext(senderPhone, senderName, input.configuredAllowedEnv);
+  console.log(
+    `[WHATSAPP PROCESSOR] Authorization check for ${maskPhone(senderPhone)}: ` +
+    `${senderContext.isAuthorized ? "AUTHORIZED" : "UNAUTHORIZED"}`
+  );
+
   if (!senderContext.isAuthorized) {
     const replyText = formatUnauthorizedMessage();
-    await sendFn(senderPhone, replyText);
+    console.warn(`[WHATSAPP PROCESSOR] Sender ${maskPhone(senderPhone)} unauthorized. Sending restricted notice.`);
+    const res = await sendFn(replyTarget, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Unauthorized notice sent: success=${Boolean(res?.success)}`);
     await markMessageProcessed(messageId, "UNAUTHORIZED");
     return { processed: true, intent: "UNAUTHORIZED", replyText };
   }
 
   // 3. Message Interpretation / NLP routing
   const intent = parseUserMessage(textBody);
+  console.log(`[WHATSAPP PROCESSOR] Intent resolved: ${intent.type} for id=${messageId}`);
 
   // 4. Clarification check
   if (intent.slots.needsClarification && intent.slots.clarificationMessage) {
     const replyText = formatClarificationMessage(intent.slots.clarificationMessage);
-    await sendFn(senderPhone, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Requesting clarification for intent=${intent.type}`);
+    const res = await sendFn(replyTarget, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Clarification prompt sent: success=${Boolean(res?.success)}`);
     await markMessageProcessed(messageId, intent.type);
     return { processed: true, intent: intent.type, replyText };
   }
@@ -190,7 +205,9 @@ export async function processIncomingMessage(
     }
 
     // 6. Send WhatsApp reply
-    await sendFn(senderPhone, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Attempting to send reply for intent=${intent.type} to ${maskPhone(replyTarget)}`);
+    const sendResult = await sendFn(replyTarget, replyText);
+    console.log(`[WHATSAPP PROCESSOR] Reply dispatch result: success=${Boolean(sendResult?.success)}`);
     await markMessageProcessed(messageId, intent.type);
 
     return {
@@ -209,7 +226,12 @@ export async function processIncomingMessage(
 
     const fallbackReply =
       "⚠️ Ocurrió un error temporal al consultar los datos del sistema. Por favor reintentá en unos minutos.";
-    await sendFn(senderPhone, fallbackReply);
+    try {
+      console.log(`[WHATSAPP PROCESSOR] Attempting to send fallback reply to ${maskPhone(replyTarget)}`);
+      await sendFn(replyTarget, fallbackReply);
+    } catch {
+      // Ignore fallback send error
+    }
 
     return {
       processed: true,

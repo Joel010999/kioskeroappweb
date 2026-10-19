@@ -1,12 +1,13 @@
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  jidNormalizedUser,
   type WASocket,
   type WAMessage,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import { initPostgresAuthState, saveEncryptedPairingCode, clearEncryptedPairingCode } from "./auth-state";
-import { normalizePhoneNumber } from "../auth";
+import { normalizePhoneNumber, getPhoneVariants, maskPhone } from "../auth";
 import { processIncomingMessage } from "../processor";
 
 export type BaileysWorkerConfig = {
@@ -28,11 +29,31 @@ export type ActiveBaileysWorker = {
 };
 
 /**
- * Extracts plain text from a Baileys WAMessage.
+ * Extracts plain text from a Baileys WAMessage, recursively unwrapping
+ * ephemeral, view-once, and edited message wrappers.
  */
 export function extractMessageText(msg: WAMessage): string {
-  const m = msg.message;
-  if (!m) return "";
+  if (!msg.message) return "";
+
+  // Recursively unwrap future-proof containers (ephemeral, view-once, edited)
+  let m: Record<string, any> = msg.message as Record<string, any>;
+  for (let i = 0; i < 5; i++) {
+    if (!m) break;
+    const inner =
+      m.ephemeralMessage?.message ||
+      m.viewOnceMessage?.message ||
+      m.viewOnceMessageV2?.message ||
+      m.viewOnceMessageV2Extension?.message ||
+      m.documentWithCaptionMessage?.message ||
+      m.editedMessage?.message?.protocolMessage?.editedMessage ||
+      m.associatedChildMessage?.message;
+
+    if (inner) {
+      m = inner;
+    } else {
+      break;
+    }
+  }
 
   return (
     m.conversation ||
@@ -40,22 +61,75 @@ export function extractMessageText(msg: WAMessage): string {
     m.imageMessage?.caption ||
     m.videoMessage?.caption ||
     m.documentMessage?.caption ||
+    m.buttonsResponseMessage?.selectedButtonId ||
+    m.templateButtonReplyMessage?.selectedId ||
+    m.listResponseMessage?.singleSelectReply?.selectedRowId ||
     ""
   ).trim();
 }
 
 /**
- * Extracts normalized phone number from a remoteJid (e.g. 5491112345678@s.whatsapp.net).
+ * Extracts digits from a JID string (e.g. 5491112345678@s.whatsapp.net -> 5491112345678).
  */
-export function extractSenderPhone(remoteJid: string | null | undefined): string {
-  if (!remoteJid) return "";
-  const atIdx = remoteJid.indexOf("@");
-  let rawDigits = atIdx !== -1 ? remoteJid.slice(0, atIdx) : remoteJid;
+export function extractPhoneFromJid(jid: string | null | undefined): string {
+  if (!jid) return "";
+  const atIdx = jid.indexOf("@");
+  let rawDigits = atIdx !== -1 ? jid.slice(0, atIdx) : jid;
   const colonIdx = rawDigits.indexOf(":");
   if (colonIdx !== -1) {
     rawDigits = rawDigits.slice(0, colonIdx);
   }
   return normalizePhoneNumber(rawDigits);
+}
+
+/**
+ * Extracts normalized phone number from a Baileys WAMessage or JID string.
+ * Checks remoteJidAlt / participantAlt / participant when remoteJid is a LID (@lid).
+ */
+export function extractSenderPhone(msg: WAMessage | string | null | undefined): string {
+  if (!msg) return "";
+
+  if (typeof msg === "string") {
+    return extractPhoneFromJid(msg);
+  }
+
+  const key = msg.key;
+  if (!key) return "";
+
+  // 1. If remoteJidAlt is a phone JID (@s.whatsapp.net or @c.us), prefer it
+  const remoteAlt = key.remoteJidAlt;
+  if (remoteAlt && (remoteAlt.endsWith("@s.whatsapp.net") || remoteAlt.endsWith("@c.us"))) {
+    const phone = extractPhoneFromJid(remoteAlt);
+    if (phone) return phone;
+  }
+
+  // 2. If participantAlt is a phone JID, use it
+  const partAlt = key.participantAlt;
+  if (partAlt && (partAlt.endsWith("@s.whatsapp.net") || partAlt.endsWith("@c.us"))) {
+    const phone = extractPhoneFromJid(partAlt);
+    if (phone) return phone;
+  }
+
+  // 3. If participant is a phone JID (e.g. in groups)
+  const participant = key.participant;
+  if (participant && (participant.endsWith("@s.whatsapp.net") || participant.endsWith("@c.us"))) {
+    const phone = extractPhoneFromJid(participant);
+    if (phone) return phone;
+  }
+
+  // 4. If remoteJid is a phone JID
+  const remoteJid = key.remoteJid;
+  if (remoteJid && (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@c.us"))) {
+    const phone = extractPhoneFromJid(remoteJid);
+    if (phone) return phone;
+  }
+
+  // 5. Fallback if remoteJid is present
+  if (remoteJid) {
+    return extractPhoneFromJid(remoteJid);
+  }
+
+  return "";
 }
 
 /**
@@ -155,47 +229,149 @@ export async function startBaileysWorker(
     }
   });
 
+  // Track message IDs dispatched by this bot process to avoid processing our own outgoing echoes
+  const sentByBotMessageIds = new Set<string>();
+
   // 3. Sender helper for responses
   const sendMessage = async (
     to: string,
     text: string
   ): Promise<{ success: boolean; messageId?: string; error?: string }> => {
     try {
-      const cleanTo = normalizePhoneNumber(to);
-      const jid = cleanTo.includes("@") ? cleanTo : `${cleanTo}@s.whatsapp.net`;
+      let jid = (to || "").trim();
+      if (!jid.includes("@")) {
+        const cleanTo = normalizePhoneNumber(jid);
+        const variants = getPhoneVariants(cleanTo);
+        // For Argentine numbers, prefer the 549 variant for WhatsApp user JIDs
+        const pn = variants.find((v) => v.startsWith("549")) || cleanTo;
+        jid = `${pn}@s.whatsapp.net`;
+      }
+
+      logger.info(
+        { recipient: maskPhone(jid), textLength: text.length },
+        "[WHATSAPP BOT] Sending outgoing message via Baileys..."
+      );
+
       const res = await sock.sendMessage(jid, { text });
+      if (res?.key?.id) {
+        sentByBotMessageIds.add(res.key.id);
+        if (sentByBotMessageIds.size > 500) {
+          const oldest = sentByBotMessageIds.values().next().value;
+          if (oldest) sentByBotMessageIds.delete(oldest);
+        }
+      }
+
+      logger.info(
+        { recipient: maskPhone(jid), messageId: res?.key?.id },
+        "[WHATSAPP BOT] Message sent successfully via Baileys."
+      );
       return { success: true, messageId: res?.key?.id ?? undefined };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Send failed";
+      logger.error(
+        { err, recipient: maskPhone(to) },
+        "[WHATSAPP BOT] Failed to send message via Baileys."
+      );
       return { success: false, error: message };
     }
   };
 
   // 4. Incoming messages listener
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    // Only process notify events (new incoming messages)
-    if (type !== "notify") return;
+    logger.info(
+      { type, count: messages.length },
+      `[WHATSAPP BOT] Incoming messages.upsert event received: count=${messages.length}, type=${type}`
+    );
 
     for (const msg of messages) {
-      // Ignore messages sent by the bot itself or broadcast/status updates
-      if (msg.key.fromMe) continue;
-      if (!msg.message) continue;
-      if (msg.key.remoteJid === "status@broadcast") continue;
-
-      const remoteJid = msg.key.remoteJid;
-      const senderPhone = extractSenderPhone(remoteJid);
-      const textBody = extractMessageText(msg);
       const messageId = msg.key.id || `baileys_${Date.now()}`;
+
+      // 1. Ignore messages sent by our bot process
+      if (sentByBotMessageIds.has(messageId)) {
+        continue;
+      }
+
+      // 2. Ignore messages without body or broadcast/status updates
+      if (!msg.message) continue;
+      const remoteJid = msg.key.remoteJid;
+      if (!remoteJid || remoteJid === "status@broadcast") continue;
+
+      // 3. For 'append' events, only process recent messages (e.g. within 120s) to avoid replaying history
+      if (type === "append") {
+        const timestamp = Number(msg.messageTimestamp || 0);
+        const ageSec = timestamp > 0 ? Date.now() / 1000 - timestamp : 999;
+        if (ageSec > 120) {
+          continue;
+        }
+      }
+
+      // 4. Disallow group messages unless authorized
+      if (remoteJid.endsWith("@g.us")) continue;
+
+      // 5. Check fromMe:
+      // If fromMe is true, only allow if the chat is a self-chat ("Note to self")
+      // where the user sends a message to their own bot account!
+      if (msg.key.fromMe) {
+        const myJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+        const myLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null;
+        const normalizedRemote = jidNormalizedUser(remoteJid);
+        const isSelfChat =
+          (myJid && normalizedRemote === myJid) ||
+          (myLid && normalizedRemote === myLid) ||
+          Boolean(pairingNumber && remoteJid.includes(normalizePhoneNumber(pairingNumber)));
+
+        if (!isSelfChat) {
+          // Outgoing message to another contact, ignore
+          continue;
+        }
+        logger.info({ messageId }, "[WHATSAPP BOT] Processing self-chat incoming message.");
+      }
+
+      // 6. Extract sender phone and message text
+      let senderPhone = extractSenderPhone(msg);
+      // If remoteJid was a LID and no alt was attached, try signalRepository LID mapping
+      if (
+        (!senderPhone || remoteJid.endsWith("@lid")) &&
+        (sock as any).signalRepository?.lidMapping?.getPNForLID
+      ) {
+        try {
+          const pnJid = await (sock as any).signalRepository.lidMapping.getPNForLID(remoteJid);
+          if (pnJid) {
+            const resolved = extractPhoneFromJid(pnJid);
+            if (resolved) senderPhone = resolved;
+          }
+        } catch {}
+      }
+
+      const textBody = extractMessageText(msg);
       const senderName = msg.pushName || undefined;
 
-      // Disallow group messages unless authorized
-      if (remoteJid?.endsWith("@g.us")) continue;
+      logger.info(
+        {
+          messageId,
+          senderMasked: maskPhone(senderPhone || remoteJid),
+          hasText: Boolean(textBody),
+          textSnippet: textBody ? textBody.slice(0, 30) : "(empty)",
+          fromMe: Boolean(msg.key.fromMe),
+        },
+        "[WHATSAPP BOT] Received incoming message payload"
+      );
 
-      if (!senderPhone || !textBody) continue;
+      if (!textBody) {
+        logger.warn({ messageId }, "[WHATSAPP BOT] Message has no text body. Skipping.");
+        continue;
+      }
+
+      const effectivePhone = senderPhone || extractPhoneFromJid(remoteJid);
+      if (!effectivePhone) {
+        logger.warn({ messageId, remoteJid }, "[WHATSAPP BOT] Unable to resolve sender phone. Skipping.");
+        continue;
+      }
 
       await processIncomingMessage({
         messageId,
-        senderPhone,
+        senderPhone: effectivePhone,
+        replyTo: remoteJid, // Always reply to the original conversation JID
         textBody,
         senderName,
         configuredAllowedEnv: config.allowedNumbersEnv,
