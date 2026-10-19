@@ -846,12 +846,14 @@ export function ReplenishmentReviewClient({
     }
   };
 
-  const handleExport = async (mode: "selected" | "rubro" | "visible") => {
+  const handleExport = async (
+    mode: "selected" | "filtered" | "rubro" | "visible",
+  ) => {
     if (!data) return;
     setExporting(true);
 
     try {
-      if (mode === "rubro" || mode === "visible") {
+      if (mode === "filtered" || mode === "rubro" || mode === "visible") {
         const currentRubro = rubro;
         let allItems: Item[] = [];
 
@@ -1536,69 +1538,37 @@ export function ReplenishmentReviewClient({
               </p>
             </div>
             <div className="export-modal-options">
-              {rubro ? (
-                <button
-                  type="button"
-                  className="export-option-btn"
-                  disabled={exporting}
-                  onClick={() => void handleExport("rubro")}
-                >
-                  <strong>
-                    {exporting
-                      ? "⏳ Exportando rubro completo..."
-                      : `1. Exportar rubro «${isSinRubro(rubro) ? "Sin rubro" : rubro}» completo (Recomendado)`}
-                  </strong>
-                  <span>
-                    Incluye todos los productos seleccionados de este rubro a lo largo de todas sus páginas ({data ? units.format(data.total) : "..."} productos en total), respetando tus cantidades solicitadas y excluyendo los destildados.
-                  </span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="export-option-btn"
-                  disabled={exporting}
-                  onClick={() => void handleExport("selected")}
-                >
-                  <strong>
-                    {exporting
-                      ? "⏳ Exportando..."
-                      : "1. Exportar pedido completo (Recomendado)"}
-                  </strong>
-                  <span>
-                    Incluye todos los <strong>{globalSelections.length} productos</strong> marcados para depósito ({units.format(globalSelections.reduce((sum, item) => sum + item.requested_quantity, 0))} unidades totales), sin importar el rubro o página actual.
-                  </span>
-                </button>
-              )}
+              <button
+                type="button"
+                className="export-option-btn"
+                disabled={exporting}
+                onClick={() => void handleExport("selected")}
+              >
+                <strong>
+                  {exporting
+                    ? "⏳ Exportando pedido completo..."
+                    : "1. Exportar pedido completo (Recomendado)"}
+                </strong>
+                <span>
+                  Incluye todos los <strong>{globalSelections.length} productos</strong> marcados para depósito ({units.format(globalSelections.reduce((sum, item) => sum + item.requested_quantity, 0))} unidades totales), sin importar el rubro o página actual.
+                </span>
+              </button>
 
-              {rubro ? (
-                <button
-                  type="button"
-                  className="export-option-btn"
-                  disabled={exporting}
-                  onClick={() => void handleExport("selected")}
-                >
-                  <strong>2. Exportar pedido general (Todos los rubros)</strong>
-                  <span>
-                    Exporta todos los <strong>{globalSelections.length} productos</strong> marcados para el pedido general de la sucursal, no solo los de {isSinRubro(rubro) ? "Sin rubro" : rubro}.
-                  </span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="export-option-btn"
-                  disabled={exporting}
-                  onClick={() => void handleExport("visible")}
-                >
-                  <strong>
-                    {exporting
-                      ? "⏳ Exportando..."
-                      : "2. Exportar productos filtrados de esta vista"}
-                  </strong>
-                  <span>
-                    Exporta todos los artículos con el filtro activo a lo largo de todas sus páginas ({data ? units.format(data.total) : 0} productos en total).
-                  </span>
-                </button>
-              )}
+              <button
+                type="button"
+                className="export-option-btn"
+                disabled={exporting}
+                onClick={() => void handleExport("filtered")}
+              >
+                <strong>
+                  {exporting
+                    ? "⏳ Exportando productos filtrados (todas las páginas)..."
+                    : "2. Exportar productos filtrados de esta vista"}
+                </strong>
+                <span>
+                  Exporta los <strong>{data ? units.format(data.total) : 0} artículos</strong> correspondientes a esta vista filtrada{rubro ? ` (Rubro: ${isSinRubro(rubro) ? "Sin rubro" : rubro})` : ""}, a lo largo de todas sus páginas, respetando tus cantidades solicitadas y excluyendo los destildados.
+                </span>
+              </button>
             </div>
             <div className="export-modal-footer">
               <button

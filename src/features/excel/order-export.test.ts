@@ -710,6 +710,79 @@ describe("Excel Export Module", () => {
       expect(exported.length).toBe(1);
       expect(exported[0].article_id).toBe(4001);
     });
+
+    it("exact reproduction: exports all 75 products of CHOCOLATES across two pages for branch Centro in a single Excel workbook", () => {
+      // 75 products total in CHOCOLATES for Centro
+      const page1: RawReplenishmentItem[] = Array.from({ length: 50 }, (_, i) => ({
+        article_id: 100 + i,
+        description: `CHOCOLATE ARTICULO #${100 + i}`,
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 4,
+        stock_depot: 60,
+        suggested_quantity: (i % 5) + 1,
+        requested_quantity: (i % 5) + 1,
+        supply_mode: "DEPOT",
+      }));
+
+      const page2: RawReplenishmentItem[] = Array.from({ length: 25 }, (_, i) => ({
+        article_id: 150 + i,
+        description: `CHOCOLATE ARTICULO #${150 + i}`,
+        rubro: "CHOCOLATES",
+        classification_code: "006",
+        stock_current: 2,
+        stock_depot: 45,
+        suggested_quantity: (i % 4) + 2,
+        requested_quantity: (i % 4) + 2,
+        supply_mode: "DEPOT",
+      }));
+
+      // Operator modified quantity of item #100 on page 1 from 1 to 20
+      const requestedMap: Record<string, number> = {
+        [`${branchId}:${planningDate}:100`]: 20,
+      };
+
+      const all75Items = [...page1, ...page2];
+      expect(all75Items.length).toBe(75);
+
+      const exported = collectRubroExportItems({
+        items: all75Items,
+        branchId,
+        planningDate,
+        targetRubro: "CHOCOLATES",
+        requestedMap,
+      });
+
+      // All 75 items must be exported
+      expect(exported.length).toBe(75);
+
+      // Verify the manual edit is present
+      const item100 = exported.find((i) => i.article_id === 100);
+      expect(item100?.requested_quantity).toBe(20);
+
+      // Verify a page 2 item is present with its suggested quantity
+      const item150 = exported.find((i) => i.article_id === 150);
+      expect(item150?.requested_quantity).toBe(2);
+
+      // Verify no duplicate article IDs
+      const ids = exported.map((i) => i.article_id);
+      expect(new Set(ids).size).toBe(75);
+
+      // Verify building the Excel workbook includes all 75 items
+      const wb = buildReplenishmentWorkbook({
+        items: exported,
+        branchLabel: "Centro",
+        planningDate,
+        title: "Pedido a Depósito - CHOCOLATES",
+      });
+
+      const ws = wb.Sheets["Reposición"];
+      expect(ws).toBeDefined();
+      const rows = xlsx.utils.sheet_to_json<any[]>(ws, { header: 1 });
+      // Header rows (metadata + columns) + 75 data rows + summary
+      const dataRows = rows.slice(4).filter((r) => typeof r[0] === "number");
+      expect(dataRows.length).toBe(75);
+    });
   });
 });
 
