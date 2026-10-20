@@ -16,6 +16,7 @@ export type BaileysWorkerConfig = {
   pairingNumber?: string;
   allowedNumbersEnv?: string;
   cleanUnregisteredSession?: boolean;
+  forceCleanSession?: boolean;
   onConnectionOpen?: () => void;
   onConnectionClose?: (shouldReconnect: boolean, statusCode?: number, error?: Error) => void;
   onPairingCode?: (code: string) => void;
@@ -146,7 +147,7 @@ export async function startBaileysWorker(
     sessionId,
   });
 
-  if (config.cleanUnregisteredSession && !state.creds.registered) {
+  if (config.forceCleanSession || (config.cleanUnregisteredSession && !state.creds.registered)) {
     await clearSession();
   }
 
@@ -212,7 +213,9 @@ export async function startBaileysWorker(
     }
 
     if (connection === "close") {
-      const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
+      const statusCode =
+        (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode ??
+        (lastDisconnect?.error as { statusCode?: number })?.statusCode;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
       logger.warn({ statusCode, isLoggedOut, err: lastDisconnect?.error }, "Baileys connection closed.");

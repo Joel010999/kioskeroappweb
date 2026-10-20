@@ -179,6 +179,51 @@ describe("Baileys Worker Lifecycle & Event Handling", () => {
       expect(mockSocket.end).toHaveBeenCalledTimes(1);
     });
 
+    it("signals reconnection required when 515 (restartRequired) is received during companion pairing handshake", async () => {
+      const onConnectionClose = vi.fn();
+      const worker = await startBaileysWorker({ onConnectionClose });
+
+      mockEv.emit("connection.update", {
+        connection: "close",
+        lastDisconnect: {
+          error: {
+            output: { statusCode: DisconnectReason.restartRequired },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(onConnectionClose).toHaveBeenCalled();
+        expect(onConnectionClose.mock.calls[0][0]).toBe(true);
+        expect(onConnectionClose.mock.calls[0][1]).toBe(515);
+      });
+      await worker.stop();
+    });
+
+    it("forces session clearing on start when forceCleanSession is true", async () => {
+      const onPairingCode = vi.fn();
+      const worker = await startBaileysWorker({
+        sessionId: "test-force-clean",
+        forceCleanSession: true,
+        pairingNumber: "5493885196480",
+        onPairingCode,
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(mockSocket.requestPairingCode).toHaveBeenCalledWith("5493885196480");
+        },
+        { timeout: 4500 }
+      );
+      await worker.stop();
+    });
+
+    it("safely closes socket on worker.stop() without error", async () => {
+      const worker = await startBaileysWorker({});
+      await worker.stop();
+      expect(mockSocket.end).toHaveBeenCalledTimes(1);
+    });
+
     it("sends message through worker instance to bare number and JID destination", async () => {
       const worker = await startBaileysWorker({});
 

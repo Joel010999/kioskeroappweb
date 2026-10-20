@@ -5,6 +5,7 @@ import {
   getEncryptedPairingCode,
   clearEncryptedPairingCode,
   clearMemoryAuthStateStore,
+  verifyPersistedSession,
 } from "./auth-state";
 import { deriveSessionKey } from "./crypto";
 
@@ -16,6 +17,21 @@ vi.mock("@/server/db/client", () => ({
       const [sessionId, keyId] = params || [];
       const row = dbRows.get(`${sessionId}:${keyId}`);
       return { rows: row ? [row] : [] };
+    }
+    if (sql.includes("SELECT count(*)")) {
+      const [sessionId] = params || [];
+      const excludeNonSignal = sql.includes("NOT IN");
+      let count = 0;
+      for (const k of dbRows.keys()) {
+        if (!sessionId || k.startsWith(`${sessionId}:`)) {
+          if (excludeNonSignal) {
+            const keyId = k.slice((sessionId || "").length + 1);
+            if (keyId === "creds" || keyId === "lock:pairing" || keyId === "pairing_code") continue;
+          }
+          count++;
+        }
+      }
+      return { rows: [{ count: String(count) }] };
     }
     if (sql.includes("INSERT INTO whatsapp_baileys_session")) {
       const [sessionId, keyId, ciphertext, iv, tag] = params || [];
@@ -146,7 +162,10 @@ describe("PostgreSQL Baileys Auth State Adapter", () => {
 
     await clearSession();
 
-    // Reload
+    // Verify existing state.creds reference was reset in-place
+    expect(state.creds.registered).toBe(false);
+
+    // Reload in separate instance
     const { state: newState } = await initPostgresAuthState({
       sessionId: "test-session",
       encryptionKey: key,
@@ -154,6 +173,119 @@ describe("PostgreSQL Baileys Auth State Adapter", () => {
     expect(newState.creds.registered).toBe(false);
     const sessionKey = await newState.keys.get("session", ["user1"]);
     expect(sessionKey["user1"]).toBeUndefined();
+  });
+
+  describe("verifyPersistedSession", () => {
+    it("reports isValid: false when session storage is empty", async () => {
+      const res = await verifyPersistedSession("non-existent");
+      expect(res.isValid).toBe(false);
+      expect(res.registered).toBe(false);
+      expect(res.jid).toBeNull();
+      expect(res.totalKeys).toBe(0);
+      expect(res.hasSignalKeys).toBe(false);
+    });
+
+    it("reports isValid: false when creds cannot be decrypted (mismatched key)", async () => {
+      const key1 = deriveSessionKey("passphrase-one-32-chars-long-123");
+      const key2 = deriveSessionKey("passphrase-two-32-chars-long-123");
+
+      const { state, saveCreds } = await initPostgresAuthState({
+        sessionId: "crypto-mismatch",
+        encryptionKey: key1,
+      });
+      state.creds.registered = true;
+      state.creds.me = { id: "5491112345678@s.whatsapp.net" };
+      await saveCreds();
+
+      // Attempt verification with mismatched key2
+      const res = await verifyPersistedSession("crypto-mismatch", key2);
+      expect(res.isValid).toBe(false);
+      expect(res.error).toBeDefined();
+      expect(res.error).toContain("Decryption failed");
+    });
+
+    it("reports isValid: false when creds exists but registered is false", async () => {
+      const key = deriveSessionKey();
+      const { state, saveCreds } = await initPostgresAuthState({
+        sessionId: "unregistered-session",
+        encryptionKey: key,
+      });
+      state.creds.registered = false;
+      await saveCreds();
+
+      const res = await verifyPersistedSession("unregistered-session", key);
+      expect(res.isValid).toBe(false);
+      expect(res.registered).toBe(false);
+    });
+
+    it("reports isValid: false when creds exists with registered: true but without Signal keys (premature stop)", async () => {
+      const key = deriveSessionKey();
+      const { state, saveCreds } = await initPostgresAuthState({
+        sessionId: "premature-session",
+        encryptionKey: key,
+      });
+      state.creds.registered = true;
+      state.creds.me = { id: "5491112345678@s.whatsapp.net" };
+      await saveCreds();
+
+      // Add a lock:pairing row to simulate pairing lock active
+      dbRows.set("premature-session:lock:pairing", { ciphertext: "active", iv: "none", tag: "none" });
+
+      const res = await verifyPersistedSession("premature-session", key);
+      expect(res.isValid).toBe(false);
+      expect(res.registered).toBe(true);
+      expect(res.hasSignalKeys).toBe(false);
+      expect(res.signalKeysCount).toBe(0);
+      expect(res.totalKeys).toBe(2);
+    });
+
+    it("reports isValid: false when creds is registered but lacks companion ADV account or signalIdentities", async () => {
+      const key = deriveSessionKey();
+      const { state, saveCreds } = await initPostgresAuthState({
+        sessionId: "no-adv-account",
+        encryptionKey: key,
+      });
+      state.creds.registered = true;
+      state.creds.me = { id: "5493885196480:1@s.whatsapp.net" };
+      delete (state.creds as any).account;
+      state.creds.signalIdentities = [];
+      await saveCreds();
+
+      // Add Signal keys
+      await state.keys.set({
+        "pre-key": { "1": { private: Buffer.from("priv"), public: Buffer.from("pub") } },
+      });
+
+      const res = await verifyPersistedSession("no-adv-account", key);
+      expect(res.isValid).toBe(false);
+      expect(res.registered).toBe(true);
+      expect(res.hasSignalKeys).toBe(true);
+    });
+
+    it("reports isValid: true when session is registered, has valid companion JID, ADV account, and contains Signal keys", async () => {
+      const key = deriveSessionKey();
+      const { state, saveCreds } = await initPostgresAuthState({
+        sessionId: "valid-session",
+        encryptionKey: key,
+      });
+      state.creds.registered = true;
+      state.creds.me = { id: "5493885196480:1@s.whatsapp.net" };
+      state.creds.account = { details: Buffer.from("adv-account-signature") } as any;
+      await saveCreds();
+
+      // Add Signal keys
+      await state.keys.set({
+        "pre-key": { "1": { private: Buffer.from("priv"), public: Buffer.from("pub") } },
+        "app-state-sync-key": { "key1": { keyData: Buffer.from("app-sync") } as any },
+      });
+
+      const res = await verifyPersistedSession("valid-session", key);
+      expect(res.isValid).toBe(true);
+      expect(res.registered).toBe(true);
+      expect(res.jid).toBe("5493885196480:1@s.whatsapp.net");
+      expect(res.hasSignalKeys).toBe(true);
+      expect(res.totalKeys).toBeGreaterThanOrEqual(3);
+    });
   });
 
   it("stores, retrieves, and expires encrypted pairing codes without exposing secrets", async () => {

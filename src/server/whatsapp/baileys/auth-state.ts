@@ -249,10 +249,20 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
         `DELETE FROM whatsapp_baileys_session WHERE session_id = $1`,
         [sessionId]
       );
-    } catch {
+    } catch (err) {
+      if (!process.env.VITEST) {
+        console.error(`[POSTGRES AUTH ERROR] Failed to clear session "${sessionId}":`, err);
+      }
+    } finally {
       for (const k of Array.from(memorySessionStore.keys())) {
         if (k.startsWith(`${sessionId}:`)) memorySessionStore.delete(k);
       }
+      // Mutate existing creds object in place so any reference holding state.creds receives fresh unauthenticated state
+      const freshCreds = initAuthCreds();
+      for (const k of Object.keys(creds)) {
+        delete (creds as any)[k];
+      }
+      Object.assign(creds, freshCreds);
     }
   };
 
@@ -261,6 +271,155 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
     saveCreds,
     clearSession,
   };
+}
+
+export type SessionVerificationResult = {
+  isValid: boolean;
+  registered: boolean;
+  jid: string | null;
+  totalKeys: number;
+  signalKeysCount: number;
+  hasSignalKeys: boolean;
+  error?: string;
+};
+
+/**
+ * Validates that a session exists in PostgreSQL, can be decrypted with the encryption key,
+ * is marked registered, contains a valid companion JID, and includes Signal pre-keys/app-state keys.
+ * Does NOT assume a session is valid just because a 'creds' or lock row exists.
+ */
+export async function verifyPersistedSession(
+  sessionId: string = "default",
+  customKey?: Buffer
+): Promise<SessionVerificationResult> {
+  const key = customKey ?? deriveSessionKey();
+  try {
+    let credsPayload: EncryptedPayload | null = null;
+    try {
+      const credsRes = await query<EncryptedPayload>(
+        `SELECT ciphertext, iv, tag FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2`,
+        [sessionId, "creds"]
+      );
+      if (credsRes.rows && credsRes.rows.length > 0) {
+        credsPayload = credsRes.rows[0];
+      }
+    } catch (dbErr) {
+      // In tests or if DB fails, check memory fallback
+      const inMem = memorySessionStore.get(`${sessionId}:creds`);
+      if (inMem) credsPayload = inMem;
+      if (!credsPayload) {
+        return {
+          isValid: false,
+          registered: false,
+          jid: null,
+          totalKeys: 0,
+          signalKeysCount: 0,
+          hasSignalKeys: false,
+          error: `Database query failed: ${dbErr instanceof Error ? dbErr.message : dbErr}`,
+        };
+      }
+    }
+
+    if (!credsPayload) {
+      const inMem = memorySessionStore.get(`${sessionId}:creds`);
+      if (inMem) credsPayload = inMem;
+    }
+
+    if (!credsPayload) {
+      return {
+        isValid: false,
+        registered: false,
+        jid: null,
+        totalKeys: 0,
+        signalKeysCount: 0,
+        hasSignalKeys: false,
+        error: "No 'creds' record exists in storage.",
+      };
+    }
+
+    let parsedCreds: AuthenticationCreds;
+    try {
+      const decryptedJson = decryptSessionData(credsPayload, key);
+      parsedCreds = JSON.parse(decryptedJson, BufferJSON.reviver) as AuthenticationCreds;
+    } catch (decryptErr) {
+      return {
+        isValid: false,
+        registered: false,
+        jid: null,
+        totalKeys: 0,
+        signalKeysCount: 0,
+        hasSignalKeys: false,
+        error: `Decryption failed: ${decryptErr instanceof Error ? decryptErr.message : decryptErr}`,
+      };
+    }
+
+    const isRegistered = Boolean(parsedCreds?.registered);
+    const jid = parsedCreds?.me?.id || null;
+
+    let totalKeys = 0;
+    let signalKeysCount = 0;
+    try {
+      const countRes = await query<{ count: string }>(
+        `SELECT count(*)::text as count FROM whatsapp_baileys_session WHERE session_id = $1`,
+        [sessionId]
+      );
+      totalKeys = parseInt(countRes.rows?.[0]?.count || "0", 10);
+
+      const signalRes = await query<{ count: string }>(
+        `SELECT count(*)::text as count FROM whatsapp_baileys_session
+         WHERE session_id = $1 AND key_id NOT IN ('creds', 'lock:pairing', 'pairing_code')`,
+        [sessionId]
+      );
+      signalKeysCount = parseInt(signalRes.rows?.[0]?.count || "0", 10);
+    } catch {
+      let memTotal = 0;
+      let memSignal = 0;
+      for (const k of memorySessionStore.keys()) {
+        if (k.startsWith(`${sessionId}:`)) {
+          memTotal++;
+          const keyId = k.slice(sessionId.length + 1);
+          if (keyId !== "creds" && keyId !== "lock:pairing" && keyId !== "pairing_code") {
+            memSignal++;
+          }
+        }
+      }
+      totalKeys = memTotal;
+      signalKeysCount = memSignal;
+    }
+
+    const hasSignalKeys = signalKeysCount > 0;
+    const hasCompanionCrypto =
+      Boolean(parsedCreds?.noiseKey) &&
+      Boolean(parsedCreds?.signedIdentityKey) &&
+      Boolean(
+        parsedCreds?.account ||
+        (parsedCreds?.signalIdentities && parsedCreds.signalIdentities.length > 0)
+      );
+    const isValid =
+      isRegistered &&
+      Boolean(jid && jid.includes("@")) &&
+      hasCompanionCrypto &&
+      hasSignalKeys;
+
+    return {
+      isValid,
+      registered: isRegistered,
+      jid,
+      totalKeys,
+      signalKeysCount,
+      hasSignalKeys,
+    };
+  } catch (err) {
+    return {
+      isValid: false,
+      registered: false,
+      jid: null,
+      totalKeys: 0,
+      signalKeysCount: 0,
+      hasSignalKeys: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export {

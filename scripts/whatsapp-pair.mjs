@@ -3,12 +3,16 @@ register("./loader.mjs", import.meta.url);
 
 const { normalizePhoneNumber } = await import("../src/server/whatsapp/auth.ts");
 const { startBaileysWorker } = await import("../src/server/whatsapp/baileys/connection.ts");
-const { ensureSessionTable } = await import("../src/server/whatsapp/baileys/auth-state.ts");
+const { ensureSessionTable, verifyPersistedSession } = await import("../src/server/whatsapp/baileys/auth-state.ts");
 const { query } = await import("../src/server/db/client.ts");
 
 const databaseUrl = process.env.DATABASE_URL;
 const encryptionKey = process.env.WHATSAPP_SESSION_ENCRYPTION_KEY;
-const pairingNumber = process.argv[2] || process.env.WHATSAPP_PAIRING_NUMBER;
+
+// Parse CLI flags and phone number
+const rawArgs = process.argv.slice(2);
+const forceClean = rawArgs.includes("--force") || rawArgs.includes("--clean");
+const pairingNumber = rawArgs.find((arg) => !arg.startsWith("-")) || process.env.WHATSAPP_PAIRING_NUMBER;
 
 if (!databaseUrl) {
   console.error("ERROR: DATABASE_URL no está configurada.");
@@ -22,7 +26,7 @@ if (!encryptionKey) {
 
 if (!pairingNumber) {
   console.error("ERROR: Debe especificar el número de WhatsApp para vincular.");
-  console.error("Uso: node scripts/whatsapp-pair.mjs <NUMERO_TELEFONO> (ej: 5493885196480)");
+  console.error("Uso: node scripts/whatsapp-pair.mjs <NUMERO_TELEFONO> [--force] (ej: 5493885196480)");
   process.exit(1);
 }
 
@@ -36,6 +40,9 @@ console.log("\n=======================================================");
 console.log("   LA CASA DEL KIOSKERO — HERRAMIENTA LOCAL DE VINCULACIÓN");
 console.log("=======================================================");
 console.log(`Número objetivo: ${cleanNumber}`);
+if (forceClean) {
+  console.log("Modo: --force activado (se limpiará cualquier sesión previa antes de solicitar código)");
+}
 
 console.log("Verificando conexión con PostgreSQL y asegurando tabla de sesión...");
 try {
@@ -60,37 +67,177 @@ async function setPairingLock() {
        ON CONFLICT (session_id, key_id)
        DO UPDATE SET ciphertext = 'active', updated_at = now()`
     );
-  } catch {}
+  } catch (err) {
+    console.warn("[PAIR LOCK] Advertencia al actualizar bloqueo:", err?.message || err);
+  }
 }
 
 async function clearPairingLock() {
   try {
     await query("DELETE FROM whatsapp_baileys_session WHERE session_id = 'default' AND key_id = 'lock:pairing'");
-  } catch {}
+  } catch (err) {
+    console.warn("[PAIR LOCK] Advertencia al liberar bloqueo:", err?.message || err);
+  }
+}
+
+// Global state
+let activeWorker = null;
+let isPairingFinished = false;
+let isStartingWorker = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let stabilizationTimer = null;
+let reconnectTimer = null;
+const STABILIZATION_TIME_MS = 12000;
+let isCleanedUp = false;
+
+// Lock heartbeat to prevent expiry in worker daemon while pairing is active
+let lockHeartbeat = setInterval(() => {
+  setPairingLock().catch(() => {});
+}, 25000);
+
+async function cleanup(exitCode = 0) {
+  if (isCleanedUp) return;
+  isCleanedUp = true;
+
+  if (lockHeartbeat) {
+    clearInterval(lockHeartbeat);
+    lockHeartbeat = null;
+  }
+
+  if (stabilizationTimer) {
+    clearTimeout(stabilizationTimer);
+    stabilizationTimer = null;
+  }
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  if (activeWorker) {
+    try {
+      await activeWorker.stop();
+    } catch {}
+    activeWorker = null;
+  }
+
+  await clearPairingLock();
+  process.exit(exitCode);
 }
 
 process.on("SIGINT", async () => {
   console.log("\nCancelando vinculación...");
-  await clearPairingLock();
-  if (activeWorker) {
-    try { await activeWorker.stop(); } catch {}
-  }
-  process.exit(1);
+  await cleanup(130);
 });
 
-console.log("Conectando con WhatsApp para solicitar código de vinculación...");
+process.on("SIGTERM", async () => {
+  console.log("\nTerminando proceso de vinculación...");
+  await cleanup(143);
+});
 
-let activeWorker = null;
-let isLinked = false;
-let reconnectAttempts = 0;
+process.on("beforeExit", async () => {
+  await cleanup(0);
+});
 
-async function runPairing(cleanPreviousSession = false) {
+process.on("uncaughtException", async (err) => {
+  console.error("\n❌ [ERROR NO CAPTURADO]:", err);
+  await cleanup(1);
+});
+
+process.on("unhandledRejection", async (reason) => {
+  console.error("\n❌ [RECHAZO DE PROMESA NO MANEJADO]:", reason);
+  await cleanup(1);
+});
+
+// Pre-flight check: verify if a valid registered session already exists
+const preflightVerification = await verifyPersistedSession("default");
+if (preflightVerification.isValid && !forceClean) {
+  console.log("\n⚠️ [AVISO] Ya existe una sesión registrada y válida en PostgreSQL para este bot:");
+  console.log(`- JID: ${preflightVerification.jid}`);
+  console.log(`- Claves totales almacenadas: ${preflightVerification.totalKeys} (Signal: ${preflightVerification.signalKeysCount})`);
+  console.log("\nSi deseás volver a vincular y reemplazar esta sesión, ejecutá:");
+  console.log(`node scripts/whatsapp-pair.mjs ${cleanNumber} --force\n`);
+  await cleanup(0);
+}
+
+let finalizeRetries = 0;
+const MAX_FINALIZE_RETRIES = 4;
+
+async function finalizePairingIfValid() {
+  if (isPairingFinished) return;
+
+  try {
+    console.log("\n[PAIR] Período de estabilización completado. Verificando persistencia y sincronización de credenciales...");
+
+    // 1. Verify that active socket is still alive and has authenticated user JID
+    const activeJid = activeWorker?.socket?.user?.id;
+    if (!activeWorker || !activeJid) {
+      console.error("\n❌ [ERROR CRÍTICO] El socket local no está autenticado o se desconectó antes de finalizar la sincronización.");
+      await cleanup(1);
+      return;
+    }
+
+    if (activeWorker?.saveCreds) {
+      await activeWorker.saveCreds();
+    }
+
+    const verification = await verifyPersistedSession("default");
+
+    if (!verification.isValid) {
+      finalizeRetries++;
+      if (finalizeRetries > MAX_FINALIZE_RETRIES) {
+        console.error(`\n❌ [ERROR CRÍTICO] Se agotó el tiempo máximo de espera para sincronización completa: ${verification.error || "claves Signal insuficientes"}.`);
+        console.error(`Estado final: registered=${verification.registered}, totalKeys=${verification.totalKeys}, signalKeys=${verification.signalKeysCount}`);
+        await cleanup(1);
+        return;
+      }
+      console.warn(`[PAIR] Sincronización aún en progreso (${verification.error || "esperando registro o claves Signal adicionales"}, intento ${finalizeRetries}/${MAX_FINALIZE_RETRIES})...`);
+      console.log(`[PAIR] Diagnóstico: registered=${verification.registered}, totalKeys=${verification.totalKeys}, signalKeys=${verification.signalKeysCount}, jid=${verification.jid}`);
+      stabilizationTimer = setTimeout(finalizePairingIfValid, 5000);
+      return;
+    }
+
+    isPairingFinished = true;
+    console.log("\n" + "=".repeat(60));
+    console.log("✅ [ÉXITO TOTAL] ¡VINCULACIÓN CONFIRMADA Y VALIDADA EN POSTGRESQL!");
+    console.log("=".repeat(60));
+    console.log(`- Dispositivo JID: ${verification.jid}`);
+    console.log(`- Claves totales en PostgreSQL: ${verification.totalKeys} (claves Signal: ${verification.signalKeysCount})`);
+    console.log(`- Estado de registro: registered = true`);
+    console.log(`- Cifrado autenticado: AES-256-GCM verificado con éxito.`);
+    console.log("\nCerrando socket local de vinculación para ceder el control al Worker de Railway...");
+
+    console.log("Socket local cerrado y bloqueo 'lock:pairing' liberado.");
+    console.log("Las credenciales están listas en PostgreSQL para que el Worker de Railway tome el control automáticamente.\n");
+    await cleanup(0);
+  } catch (err) {
+    console.error("\n❌ [ERROR CRÍTICO] Falló la verificación final en PostgreSQL:", err?.message || err);
+    await cleanup(1);
+  }
+}
+
+async function runPairing(cleanSession = false) {
+  if (isPairingFinished || isStartingWorker) return;
+  isStartingWorker = true;
+
   try {
     await setPairingLock();
+
+    // Ensure any previous worker instance is stopped before creating a new socket
+    if (activeWorker) {
+      try {
+        await activeWorker.stop();
+      } catch {}
+      activeWorker = null;
+    }
+
+    console.log("Conectando con WhatsApp para solicitar código de vinculación...");
+
     activeWorker = await startBaileysWorker({
       sessionId: "default",
       pairingNumber: cleanNumber,
-      cleanUnregisteredSession: cleanPreviousSession,
+      forceCleanSession: cleanSession,
       onPairingCode: (code) => {
         console.log("\n" + "=".repeat(50));
         console.log(`>>> CÓDIGO DE VINCULACIÓN: ${code} <<<`);
@@ -100,75 +247,79 @@ async function runPairing(cleanPreviousSession = false) {
         console.log("2. Andá a Ajustes / Menú > Dispositivos Vinculados.");
         console.log("3. Seleccioná 'Vincular un dispositivo' > 'Vincular con el número de teléfono'.");
         console.log(`4. Ingresá el código de 8 dígitos mostrado arriba: ${code}`);
-        console.log("\nEsperando confirmación de WhatsApp...\n");
+        console.log("\nEsperando confirmación e ingreso en WhatsApp...\n");
       },
       onConnectionOpen: async () => {
-        isLinked = true;
-        console.log("\n[PAIR] ¡Dispositivo reconocido por WhatsApp! Esperando sincronización de claves y credenciales...");
-        // Wait 4 seconds for Baileys to complete initial companion synchronization and key exchange
-        setTimeout(async () => {
-          try {
-            if (activeWorker?.saveCreds) {
-              await activeWorker.saveCreds();
-            }
-            const check = await query(
-              "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1 AND key_id = $2",
-              ["default", "creds"]
-            );
-            const allKeysCheck = await query(
-              "SELECT count(*) FROM whatsapp_baileys_session WHERE session_id = $1",
-              ["default"]
-            );
-            const count = parseInt(check.rows?.[0]?.count || "0", 10);
-            const totalKeys = parseInt(allKeysCheck.rows?.[0]?.count || "0", 10);
-            if (count === 0) {
-              console.error("\n❌ [ERROR CRÍTICO] La conexión abrió pero el registro 'creds' no existe en PostgreSQL.");
-              await clearPairingLock();
-              process.exit(1);
-            }
-            console.log(`\n[PAIR DIAGNOSTIC] Verificación en PostgreSQL: ${totalKeys} claves guardadas, registro 'creds' confirmado.`);
-            console.log("✅ [ÉXITO] ¡Dispositivo vinculado y sincronizado correctamente!");
-            console.log("Cerrando socket local de vinculación para ceder el control al Worker de Railway...");
-            await activeWorker?.stop();
-            await clearPairingLock();
-            console.log("Socket local cerrado. Las credenciales están listas en PostgreSQL para el Worker de Railway.\n");
-            process.exit(0);
-          } catch (err) {
-            console.error("\n❌ [ERROR CRÍTICO] Falló el guardado final en PostgreSQL:", err?.message || err);
-            await clearPairingLock();
-            process.exit(1);
+        if (isPairingFinished) return;
+        console.log("\n[PAIR] ¡Canal abierto con WhatsApp (connection: 'open')!");
+        console.log("[PAIR] Esperando estabilización del enlace y sincronización de claves Signal (12s)...");
+
+        try {
+          if (activeWorker?.saveCreds) {
+            await activeWorker.saveCreds();
           }
-        }, 4000);
+        } catch {}
+
+        if (stabilizationTimer) clearTimeout(stabilizationTimer);
+        stabilizationTimer = setTimeout(finalizePairingIfValid, STABILIZATION_TIME_MS);
       },
       onConnectionClose: async (shouldReconnect, statusCode) => {
-        if (isLinked) return;
+        if (isPairingFinished) return;
 
-        if (shouldReconnect && reconnectAttempts < 5) {
+        // Cancel any pending stabilization timer
+        if (stabilizationTimer) {
+          clearTimeout(stabilizationTimer);
+          stabilizationTimer = null;
+        }
+
+        // Close and null previous active worker immediately so no two sockets exist during the backoff delay
+        if (activeWorker) {
+          try {
+            await activeWorker.stop();
+          } catch {}
+          activeWorker = null;
+        }
+
+        // WhatsApp sends 515 (Restart Required) during initial companion setup
+        const isRestartRequired = statusCode === 515 || (shouldReconnect && statusCode !== 401);
+
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+
+        if (isRestartRequired && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttempts++;
-          console.log(`\n[INFO] Conexión cerrada con código ${statusCode ?? 515} (reinicio requerido para finalizar enlace). Reconectando intento ${reconnectAttempts}/5...`);
-          setTimeout(async () => {
+          console.log(`\n[INFO] Conexión cerrada con código ${statusCode ?? 515} (reinicio requerido para sincronización de credenciales).`);
+          console.log(`[INFO] Reconectando intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} conservando credenciales...`);
+
+          reconnectTimer = setTimeout(async () => {
+            reconnectTimer = null;
             try {
-              await activeWorker?.stop();
-              // Reconnect without wiping credentials so it finalizes the companion handshake!
+              // CRITICAL: Reconnect without wiping credentials (cleanSession = false)
               await runPairing(false);
             } catch (err) {
               console.error("Fallo al reconectar:", err?.message || err);
+              await cleanup(1);
             }
-          }, 1500);
+          }, 2000);
         } else {
           console.error(`\n❌ [ERROR] La sesión no se pudo vincular (código de desconexión: ${statusCode ?? "desconocido"}).`);
-          console.error("Si el error persiste, esperá 2 minutos para evitar límites de intentos de WhatsApp y volvé a probar.");
-          await clearPairingLock();
-          process.exit(1);
+          if (statusCode === 401) {
+            console.error("WhatsApp rechazó la autenticación (401 Unauthorized). Verificá que el número no esté vinculado a otra sesión o que el código se haya ingresado a tiempo.");
+          }
+          await cleanup(1);
         }
       },
     });
   } catch (error) {
     console.error("Fallo al inicializar vinculación:", error?.message || error);
-    await clearPairingLock();
-    process.exit(1);
+    await cleanup(1);
+  } finally {
+    isStartingWorker = false;
   }
 }
 
-// On first run, clean any previous abandoned/broken pairing attempts
-await runPairing(true);
+// On first run, clean any previous abandoned/broken pairing attempts if requested or unregistered
+const shouldCleanOnStart = forceClean || !preflightVerification.isValid;
+await runPairing(shouldCleanOnStart);
