@@ -5,6 +5,7 @@ import { resolvePendingClarification, clearAllPendingClarifications, setPendingC
 import { queryReplenishmentExcelData } from "./queries";
 import { processIncomingMessage } from "./processor";
 import { clearMemoryDeduplicationCache } from "./deduplication";
+import { formatGreetingMessage } from "./formatters";
 import type { getWeeklyReplenishment } from "@/server/analytics/weekly-replenishment";
 
 // Mock DB client to avoid network timeouts during unit tests
@@ -64,64 +65,113 @@ describe("WhatsApp Bot — Excel Replenishment by Rubro", () => {
     clearMemoryDeduplicationCache();
   });
 
-  describe("1. Detección de solicitudes de Excel por rubro", () => {
-    it("recognizes explicit request: 'Mandame un Excel con los productos que tengo que reponer de Chocolates'", () => {
-      const intent = parseUserMessage(
-        "Mandame un Excel con los productos que tengo que reponer de Chocolates",
-        refDate
-      );
+  describe("0. Menú inicial y opción 5", () => {
+    it("greeting message contains the four original options and adds the fifth option with examples", () => {
+      const greeting = formatGreetingMessage("Mónica");
+      // All 4 original options must be present
+      expect(greeting).toContain("📦 *1. Stock de productos*");
+      expect(greeting).toContain("🧾 *2. Pedidos registrados*");
+      expect(greeting).toContain("🚚 *3. Reposición semanal*");
+      expect(greeting).toContain("📊 *4. Resúmenes del negocio*");
+      // 5th option must be present with brief explanation and real examples
+      expect(greeting).toContain("📑 *5. Excel de reposición por rubro y sucursal*");
+      expect(greeting).toContain("Excel de cigarrillos para Centro");
+      expect(greeting).toContain("Quiero la planilla de bebidas para Jardín");
+    });
+
+    it("selecting menu option '5' routes to REPLENISHMENT_EXCEL and asks for rubro", () => {
+      const intent = parseUserMessage("5", refDate);
       expect(intent.type).toBe("REPLENISHMENT_EXCEL");
-      expect(intent.slots.targetRubro).toBe("CHOCOLATES");
       expect(intent.slots.wantsExcel).toBe(true);
-      // Missing branch -> needs clarification
+      expect(intent.slots.needsClarification).toBe(true);
+      expect(intent.slots.clarificationType).toBe("RUBRO");
+      expect(intent.slots.clarificationMessage).toContain("Chocolates");
+      expect(intent.slots.clarificationMessage).toContain("Centro");
+    });
+  });
+
+  describe("1. Detección de solicitudes de Excel por rubro", () => {
+    it("recognizes: 'Excel de cigarrillos para Centro'", () => {
+      const intent = parseUserMessage("Excel de cigarrillos para Centro", refDate);
+      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
+      expect(intent.slots.targetRubro).toBe("CIGARRILLOS");
+      expect(intent.slots.branchTarget).toBe("CENTRO");
+      expect(intent.slots.branchId).toBe(2);
+      expect(intent.slots.needsClarification).toBe(false);
+    });
+
+    it("recognizes: 'Quiero la planilla de bebidas para Jardín'", () => {
+      const intent = parseUserMessage("Quiero la planilla de bebidas para Jardín", refDate);
+      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
+      expect(intent.slots.targetRubro).toBe("BEBIDAS");
+      expect(intent.slots.branchTarget).toBe("JARDIN");
+      expect(intent.slots.branchId).toBe(3);
+      expect(intent.slots.needsClarification).toBe(false);
+    });
+
+    it("recognizes: 'Pasame la reposición de almacén para Depósito'", () => {
+      const intent = parseUserMessage("Pasame la reposición de almacén para Depósito", refDate);
+      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
+      expect(intent.slots.targetRubro).toBe("ALMACEN");
+      expect(intent.slots.branchTarget).toBe("DEPOSITO");
+      expect(intent.slots.branchId).toBe(1);
+      // Depósito triggers clarification explaining it supplies Centro and Jardín
+      expect(intent.slots.needsClarification).toBe(true);
+      expect(intent.slots.clarificationType).toBe("BRANCH");
+      expect(intent.slots.clarificationMessage).toContain("se calcula para las sucursales de venta");
+    });
+
+    it("recognizes: 'Necesito el Excel de galletitas'", () => {
+      const intent = parseUserMessage("Necesito el Excel de galletitas", refDate);
+      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
+      expect(intent.slots.targetRubro).toBe("GALLETITAS");
       expect(intent.slots.needsClarification).toBe(true);
       expect(intent.slots.clarificationType).toBe("BRANCH");
       expect(intent.slots.clarificationMessage).toContain("Centro");
       expect(intent.slots.clarificationMessage).toContain("Jardín");
     });
 
-    it("recognizes request with branch included: 'Mandame un Excel de Chocolates para Centro'", () => {
-      const intent = parseUserMessage(
-        "Mandame un Excel de Chocolates para Centro",
-        refDate
-      );
+    it("recognizes: 'Quiero una planilla de reposición'", () => {
+      const intent = parseUserMessage("Quiero una planilla de reposición", refDate);
+      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
+      expect(intent.slots.needsClarification).toBe(true);
+      expect(intent.slots.clarificationType).toBe("RUBRO");
+      expect(intent.slots.clarificationMessage).toContain("Chocolates");
+      expect(intent.slots.clarificationMessage).toContain("Galletitas");
+    });
+
+    it("recognizes: 'Excel Centro chocolates'", () => {
+      const intent = parseUserMessage("Excel Centro chocolates", refDate);
       expect(intent.type).toBe("REPLENISHMENT_EXCEL");
       expect(intent.slots.targetRubro).toBe("CHOCOLATES");
       expect(intent.slots.branchTarget).toBe("CENTRO");
       expect(intent.slots.branchId).toBe(2);
-      expect(intent.slots.wantsExcel).toBe(true);
       expect(intent.slots.needsClarification).toBe(false);
     });
 
-    it("recognizes natural phrasing: 'Quiero la planilla de reposición del rubro Galletitas en Jardín'", () => {
-      const intent = parseUserMessage(
-        "Quiero la planilla de reposición del rubro Galletitas en Jardín",
-        refDate
-      );
-      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
-      expect(intent.slots.targetRubro).toBe("GALLETITAS");
-      expect(intent.slots.branchTarget).toBe("JARDIN");
-      expect(intent.slots.branchId).toBe(3);
-      expect(intent.slots.wantsExcel).toBe(true);
-      expect(intent.slots.needsClarification).toBe(false);
+    it("handles casing, accents, and spacing variations gracefully", () => {
+      const upper = parseUserMessage("EXCEL DE CIGARRILLOS PARA CENTRO", refDate);
+      expect(upper.type).toBe("REPLENISHMENT_EXCEL");
+      expect(upper.slots.targetRubro).toBe("CIGARRILLOS");
+      expect(upper.slots.branchTarget).toBe("CENTRO");
+
+      const withAccents = parseUserMessage("Quiero la planilla de reposición de bebidas para Jardín", refDate);
+      expect(withAccents.type).toBe("REPLENISHMENT_EXCEL");
+      expect(withAccents.slots.targetRubro).toBe("BEBIDAS");
+      expect(withAccents.slots.branchTarget).toBe("JARDIN");
+
+      const extraSpaces = parseUserMessage("  excel    centro   chocolates  ", refDate);
+      expect(extraSpaces.type).toBe("REPLENISHMENT_EXCEL");
+      expect(extraSpaces.slots.targetRubro).toBe("CHOCOLATES");
+      expect(extraSpaces.slots.branchTarget).toBe("CENTRO");
     });
 
-    it("recognizes phrasing: 'Pasame los productos que tengo que pedir de Caramelos en Excel para Centro'", () => {
-      const intent = parseUserMessage(
-        "Pasame los productos que tengo que pedir de Caramelos en Excel para Centro",
-        refDate
-      );
-      expect(intent.type).toBe("REPLENISHMENT_EXCEL");
-      expect(intent.slots.targetRubro).toBe("CARAMELOS");
-      expect(intent.slots.branchTarget).toBe("CENTRO");
-      expect(intent.slots.branchId).toBe(2);
-    });
-
-    it("resolves synonyms to canonical rubro names (golosinas -> CARAMELOS, gaseosas -> BEBIDAS)", () => {
+    it("resolves synonyms to canonical rubro names (golosinas -> CARAMELOS, gaseosas -> BEBIDAS, puchos -> CIGARRILLOS)", () => {
       expect(resolveCanonicalRubroFromText("excel de golosinas").canonical).toBe("CARAMELOS");
       expect(resolveCanonicalRubroFromText("excel de gaseosas").canonical).toBe("BEBIDAS");
       expect(resolveCanonicalRubroFromText("planilla de puchos").canonical).toBe("CIGARRILLOS");
       expect(resolveCanonicalRubroFromText("excel de chocolates").canonical).toBe("CHOCOLATES");
+      expect(resolveCanonicalRubroFromText("excel de masitas").canonical).toBe("GALLETITAS");
     });
   });
 
@@ -158,14 +208,38 @@ describe("WhatsApp Bot — Excel Replenishment by Rubro", () => {
     });
   });
 
-  describe("3. Solicitud de aclaración cuando falta la sucursal", () => {
-    it("asks whether Centro or Jardín when branch is omitted", () => {
+  describe("2.5. Protección contra falsos positivos con la palabra 'Excel'", () => {
+    it("does not trigger REPLENISHMENT_EXCEL for 'Excel de ventas'", () => {
+      const intent = parseUserMessage("Excel de ventas", refDate);
+      expect(intent.type).toBe("METRICS_SUMMARY");
+    });
+
+    it("does not trigger REPLENISHMENT_EXCEL for 'Excel de pedidos'", () => {
+      const intent = parseUserMessage("Excel de pedidos", refDate);
+      expect(intent.type).toBe("ORDERS_RECENT");
+    });
+
+    it("does not trigger REPLENISHMENT_EXCEL for 'Stock alfajor en Excel'", () => {
+      const intent = parseUserMessage("Stock alfajor havanna en Excel", refDate);
+      expect(intent.type).toBe("STOCK_PRODUCT");
+      expect(intent.slots.productSearch).toContain("alfajor havanna");
+    });
+
+    it("does not trigger REPLENISHMENT_EXCEL for system update question mentioning Excel", () => {
+      const intent = parseUserMessage("¿De qué fecha es la sincronización del Excel?", refDate);
+      expect(intent.type).toBe("SYSTEM_HEALTH");
+    });
+  });
+
+  describe("3. Solicitud de aclaración cuando faltan datos o son inválidos", () => {
+    it("asks whether Centro, Jardín o Depósito when branch is omitted", () => {
       const intent = parseUserMessage("Mandame un Excel de reposición de Chocolates", refDate);
       expect(intent.slots.needsClarification).toBe(true);
       expect(intent.slots.clarificationType).toBe("BRANCH");
       expect(intent.slots.pendingIntentType).toBe("REPLENISHMENT_EXCEL");
       expect(intent.slots.clarificationMessage).toContain("Centro");
       expect(intent.slots.clarificationMessage).toContain("Jardín");
+      expect(intent.slots.clarificationMessage).toContain("Depósito");
     });
 
     it("asks whether Centro or Jardín when user specifies Depósito", () => {
@@ -173,10 +247,29 @@ describe("WhatsApp Bot — Excel Replenishment by Rubro", () => {
       expect(intent.slots.needsClarification).toBe(true);
       expect(intent.slots.clarificationType).toBe("BRANCH");
       expect(intent.slots.clarificationMessage).toContain("se calcula para las sucursales de venta");
+      expect(intent.slots.clarificationMessage).toContain("Centro");
+      expect(intent.slots.clarificationMessage).toContain("Jardín");
+    });
+
+    it("identifies invalid rubro and explains options: 'Excel de ferretería para Centro'", () => {
+      const intent = parseUserMessage("Excel de ferretería para Centro", refDate);
+      expect(intent.slots.needsClarification).toBe(true);
+      expect(intent.slots.clarificationType).toBe("RUBRO");
+      expect(intent.slots.clarificationMessage).toContain("Ferretería");
+      expect(intent.slots.clarificationMessage).toContain("Chocolates");
+    });
+
+    it("identifies invalid branch and explains options: 'Excel de chocolates para Quilmes'", () => {
+      const intent = parseUserMessage("Excel de chocolates para Quilmes", refDate);
+      expect(intent.slots.needsClarification).toBe(true);
+      expect(intent.slots.clarificationType).toBe("BRANCH");
+      expect(intent.slots.clarificationMessage).toContain("Quilmes");
+      expect(intent.slots.clarificationMessage).toContain("Centro");
+      expect(intent.slots.clarificationMessage).toContain("Jardín");
     });
   });
 
-  describe("4. Continuación del contexto al recibir 'Centro' o 'Jardín'", () => {
+  describe("4. Continuación del contexto y actualización de selecciones", () => {
     it("preserves targetRubro and resolves intent when user replies with branch", () => {
       // Step 1: Initial user query without branch
       const initialIntent = parseUserMessage("Mandame un Excel de Chocolates", refDate);
@@ -220,6 +313,65 @@ describe("WhatsApp Bot — Excel Replenishment by Rubro", () => {
         expect(resolved.intent.slots.targetRubro).toBe("GALLETITAS");
         expect(resolved.intent.slots.branchTarget).toBe("JARDIN");
         expect(resolved.intent.slots.branchId).toBe(3);
+      }
+    });
+
+    it("updates rubro if user switches rubro during branch clarification: 'Mejor galletitas para Centro'", () => {
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: {
+          branchTarget: "ALL",
+          targetRubro: "CHOCOLATES",
+          wantsExcel: true,
+        },
+        clarificationType: "BRANCH",
+      });
+
+      const resolved = resolvePendingClarification(testPhone, "Mejor galletitas para Centro");
+      expect(resolved.type).toBe("RESOLVED");
+      if (resolved.type === "RESOLVED") {
+        expect(resolved.intent.type).toBe("REPLENISHMENT_EXCEL");
+        expect(resolved.intent.slots.targetRubro).toBe("GALLETITAS");
+        expect(resolved.intent.slots.branchTarget).toBe("CENTRO");
+        expect(resolved.intent.slots.branchId).toBe(2);
+      }
+    });
+
+    it("re-prompts when user replies with Depósito during clarification", () => {
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: {
+          branchTarget: "ALL",
+          targetRubro: "ALMACEN",
+          wantsExcel: true,
+        },
+        clarificationType: "BRANCH",
+      });
+
+      const reprompt = resolvePendingClarification(testPhone, "Depósito");
+      expect(reprompt.type).toBe("RE_PROMPT");
+      if (reprompt.type === "RE_PROMPT") {
+        expect(reprompt.message).toContain("se calcula para las sucursales de venta");
+        expect(reprompt.message).toContain("Almacén");
+      }
+    });
+
+    it("re-prompts when user enters an invalid rubro during rubro clarification", () => {
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: {
+          branchTarget: "CENTRO",
+          branchId: 2,
+          wantsExcel: true,
+        },
+        clarificationType: "RUBRO",
+      });
+
+      const reprompt = resolvePendingClarification(testPhone, "Ferretería");
+      expect(reprompt.type).toBe("RE_PROMPT");
+      if (reprompt.type === "RE_PROMPT") {
+        expect(reprompt.message).toContain("Ferretería");
+        expect(reprompt.message).toContain("Chocolates");
       }
     });
   });

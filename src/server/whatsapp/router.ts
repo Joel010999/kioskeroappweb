@@ -174,7 +174,7 @@ export function resolvePeriodFromText(
 export function extractBranch(text: string): { target: BranchTarget; branchId?: number } {
   const clean = cleanText(text);
 
-  if (/\b(deposito|depo|almacen|central)\b/.test(clean)) {
+  if (/\b(deposito central|almacen central|deposito|depo|central)\b/.test(clean)) {
     return { target: "DEPOSITO", branchId: 1 };
   }
   if (/\b(centro|sucursal centro|local centro|pv1)\b/.test(clean)) {
@@ -188,20 +188,44 @@ export function extractBranch(text: string): { target: BranchTarget; branchId?: 
 }
 
 /**
+ * Extracts candidate invalid branch if specified using "para <branch>", "en <branch>", etc.
+ */
+export function extractInvalidBranch(text: string): string | undefined {
+  const match = text.match(/\b(?:para|en|sucursal|local)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\b/i);
+  if (match && match[1]) {
+    const rawCandidate = match[1].trim();
+    const candidateClean = cleanText(rawCandidate);
+    const validTokens = new Set([
+      "centro", "jardin", "deposito", "depo", "central",
+      "el", "la", "los", "las", "un", "una", "mi", "este", "esta",
+      "excel", "planilla", "archivo", "reposicion", "reponer", "stock",
+      "chocolates", "caramelos", "galletitas", "bebidas", "almacen",
+      "cigarrillos", "pilas", "copetin", "descartables", "limpieza",
+      "perfumeria", "golosinas", "gaseosas", "snacks", "que", "de",
+      "todo", "todos", "todas"
+    ]);
+    if (!validTokens.has(candidateClean) && candidateClean.length >= 3) {
+      return rawCandidate.charAt(0).toUpperCase() + rawCandidate.slice(1);
+    }
+  }
+  return undefined;
+}
+
+/**
  * Known commercial rubros and their common synonyms for natural language matching.
  */
 const RUBRO_ALIASES: Array<{ canonical: string; patterns: RegExp[] }> = [
-  { canonical: "CHOCOLATES", patterns: [/\bchocolates?\b/, /\bchocola\w*/] },
-  { canonical: "CARAMELOS", patterns: [/\bcaramelos?\b/, /\bgolosinas?\b/] },
-  { canonical: "GALLETITAS", patterns: [/\bgalletitas?\b/, /\bgalletas?\b/] },
-  { canonical: "BEBIDAS", patterns: [/\bbebidas?\b/, /\bgaseosas?\b/] },
+  { canonical: "CHOCOLATES", patterns: [/\bchocolates?\b/, /\bchocola\w*/, /\bchocolatines?\b/] },
+  { canonical: "CARAMELOS", patterns: [/\bcaramelos?\b/, /\bgolosinas?\b/, /\bgomitas?\b/, /\bconfites?\b/] },
+  { canonical: "GALLETITAS", patterns: [/\bgalletitas?\b/, /\bgalletas?\b/, /\bmasitas?\b/] },
+  { canonical: "BEBIDAS", patterns: [/\bbebidas?\b/, /\bgaseosas?\b/, /\bjugos?\b/, /\baguas?\b/] },
   { canonical: "ALMACEN", patterns: [/\balmacen\b/, /\balmacenes\b/] },
-  { canonical: "CIGARRILLOS", patterns: [/\bcigarrillos?\b/, /\bcigarros?\b/, /\bpuchos?\b/] },
+  { canonical: "CIGARRILLOS", patterns: [/\bcigarrillos?\b/, /\bcigarros?\b/, /\bpuchos?\b/, /\bpucho\b/] },
   { canonical: "PILAS", patterns: [/\bpilas?\b/, /\bbaterias?\b/] },
-  { canonical: "COPETIN", patterns: [/\bcopetin\b/, /\bsnacks?\b/] },
+  { canonical: "COPETIN", patterns: [/\bcopetin\b/, /\bsnacks?\b/, /\bpapas fritas\b/] },
   { canonical: "DESCARTABLES", patterns: [/\bdescartables?\b/] },
   { canonical: "ENCENDIDOS", patterns: [/\bencendidos?\b/, /\bencendedores?\b/, /\bencendedor\b/, /\bfosforos?\b/] },
-  { canonical: "INSECTICIDA", patterns: [/\binsecticidas?\b/] },
+  { canonical: "INSECTICIDA", patterns: [/\binsecticidas?\b/, /\brepelentes?\b/] },
   { canonical: "LIMPIEZA", patterns: [/\blimpieza\b/] },
   { canonical: "NAIPES", patterns: [/\bnaipes?\b/, /\bcartas?\b/] },
   { canonical: "NAVIDEÑOS", patterns: [/\bnavidenos?\b/, /\bnavidad\b/] },
@@ -233,7 +257,7 @@ export function resolveCanonicalRubroFromText(text: string): {
   // 2. Check if user explicitly named an unknown rubro: "rubro X", "rubro de X", "excel de [reposicion de] X"
   const rawPatterns = [
     /\brubro\s+(?:de\s+)?([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\b/i,
-    /\b(?:excel|planilla|archivo|xlsx)(?:\s+(?:de|del)\s+(?:reposicion|reposición|reponer))?\s+(?:de|del)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\b/i,
+    /\b(?:excel|planilla|archivo|xlsx)(?:\s+(?:de|del)\s+(?:reposicion|reposición|reponer))?(?:\s+(?:de|del))?\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\b/i,
     /\b(?:reposicion|reposición|reponer|pedir|comprar)\s+(?:de|del)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ]+)\b/i,
   ];
 
@@ -243,11 +267,12 @@ export function resolveCanonicalRubroFromText(text: string): {
       const rawCandidate = m[1].trim();
       const cleanCandidate = cleanText(rawCandidate);
       const ignored = new Set([
-        "de", "del", "para", "en", "excel", "planilla", "centro", "jardin", "deposito",
-        "todos", "general", "reposicion", "reponer", "pedidos", "pedido", "stock",
-        "los", "las", "la", "el", "rubro", "que", "un", "una"
+        "de", "del", "para", "en", "excel", "planilla", "archivo", "xlsx",
+        "centro", "jardin", "deposito", "depo", "central",
+        "todos", "todas", "general", "reposicion", "reponer", "pedidos", "pedido", "stock",
+        "los", "las", "la", "el", "rubro", "que", "un", "una", "por"
       ]);
-      if (!ignored.has(cleanCandidate)) {
+      if (!ignored.has(cleanCandidate) && cleanCandidate.length >= 3) {
         const formatted = rawCandidate.charAt(0).toUpperCase() + rawCandidate.slice(1);
         return { unknownRubro: formatted };
       }
@@ -257,8 +282,32 @@ export function resolveCanonicalRubroFromText(text: string): {
   return {};
 }
 
+const RUBRO_DISPLAY_NAMES: Record<string, string> = {
+  ALMACEN: "Almacén",
+  BEBIDAS: "Bebidas",
+  CARAMELOS: "Caramelos",
+  CIGARRILLOS: "Cigarrillos",
+  COPETIN: "Copetín",
+  CHOCOLATES: "Chocolates",
+  DESCARTABLES: "Descartables",
+  ENCENDIDOS: "Encendidos",
+  GALLETITAS: "Galletitas",
+  INSECTICIDA: "Insecticida",
+  LIMPIEZA: "Limpieza",
+  NAIPES: "Naipes",
+  NAVIDEÑOS: "Navideños",
+  PEGAMENTOS: "Pegamentos",
+  PERFUMERIA: "Perfumería",
+  PILAS: "Pilas",
+  "TABACO Y AFINES": "Tabaco y afines",
+  VARIOS: "Varios",
+  __SIN_RUBRO__: "Sin rubro",
+};
+
 export function formatRubroLabel(canonical: string): string {
-  if (canonical === "__SIN_RUBRO__") return "Sin rubro";
+  if (RUBRO_DISPLAY_NAMES[canonical]) {
+    return RUBRO_DISPLAY_NAMES[canonical];
+  }
   return canonical.charAt(0).toUpperCase() + canonical.slice(1).toLowerCase();
 }
 
@@ -407,7 +456,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     targetRubro: rubroInfo.canonical,
   };
 
-  // 1. MENU NUMERIC SHORTCUTS (1, 2, 3, 4)
+  // 1. MENU NUMERIC SHORTCUTS (1, 2, 3, 4, 5)
   if (/^1$/.test(clean)) {
     return {
       type: "STOCK_PRODUCT",
@@ -441,6 +490,22 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
   }
   if (/^4$/.test(clean)) {
     return { type: "METRICS_SUMMARY", rawText: text, slots, confidence: 1.0 };
+  }
+  if (/^5$/.test(clean) || /^(opcion|opción)\s*5$/i.test(clean)) {
+    return {
+      type: "REPLENISHMENT_EXCEL",
+      rawText: text,
+      slots: {
+        ...slots,
+        wantsExcel: true,
+        needsClarification: true,
+        clarificationType: "RUBRO",
+        clarificationMessage:
+          "Para generar el Excel de reposición, ¿qué rubro necesitás? Los rubros disponibles son: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros (también podés indicarme la sucursal, ej. _«Galletitas para Centro»_).",
+        pendingIntentType: "REPLENISHMENT_EXCEL",
+      },
+      confidence: 1.0,
+    };
   }
 
   // 2. GREETINGS & HELP
@@ -493,17 +558,34 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
 
   // 8. LISTA DE PEDIDOS / ÚLTIMOS PEDIDOS (Resolves problem with "¿Qué pedidos hay?" / "Pedidos registrados")
   if (
-    /\b(que pedidos hay|pedidos registrados|pedidos hay|cuales son los ultimos pedidos|ultimos pedidos|ultimo pedido|pedidos de|ver pedidos|estado de pedidos|ordenes|lista de pedidos|mostrame los pedidos|que pedidos)\b/.test(clean) ||
+    /\b(excel de pedidos|planilla de pedidos|que pedidos hay|pedidos registrados|pedidos hay|cuales son los ultimos pedidos|ultimos pedidos|ultimo pedido|pedidos de|ver pedidos|estado de pedidos|ordenes|lista de pedidos|mostrame los pedidos|que pedidos)\b/.test(clean) ||
     clean === "pedidos"
   ) {
     return { type: "ORDERS_RECENT", rawText: text, slots, confidence: 0.95 };
   }
 
   // 8.5. REPOSICIÓN EN EXCEL (por rubro o general)
-  const mentionsExcel = /\b(excel|planilla|archivo|xlsx)\b/.test(clean);
-  const mentionsReplenish = /\b(reponer|reposicion|pedir|pedido|pedidos|comprar|necesitan)\b/.test(clean);
+  const mentionsExcelOrSheet = /\b(excel|planilla|archivo|xlsx|sheet|reporte)\b/.test(clean);
+  const mentionsReplenish = /\b(reponer|reposicion|reposición|que hay que reponer|que reponer|sugerencias de reposicion)\b/.test(clean);
+  const mentionsAction = /\b(pasame|mandame|enviame|generame|armame|descargame|descargar|exportar|exportame|bajar|quiero|necesito)\b/.test(clean);
 
-  if (mentionsExcel && (mentionsReplenish || Boolean(rubroInfo.canonical || rubroInfo.unknownRubro))) {
+  // Guard against queries that explicitly ask for other domains (sales, orders, stock) even if they mention excel
+  const isExplicitNonReplenishmentExcel =
+    /\b(ventas|movimientos|balance|cierre)\b/.test(clean) ||
+    /\b(pedidos registrados|ultimos pedidos|pedidos pendientes|estado de pedidos)\b/.test(clean) ||
+    /\b(stock|cuanto stock|stock bajo|sin stock)\b/.test(clean) ||
+    /\b(cuando se actualizo|de que fecha|fecha del excel|sincronizacion)\b/.test(clean);
+
+  const isReplenishmentExcelIntent =
+    !isExplicitNonReplenishmentExcel &&
+    (
+      (mentionsExcelOrSheet && (mentionsReplenish || Boolean(rubroInfo.canonical || rubroInfo.unknownRubro))) ||
+      (mentionsAction && mentionsReplenish && Boolean(rubroInfo.canonical || rubroInfo.unknownRubro)) ||
+      (mentionsExcelOrSheet && mentionsAction && (mentionsReplenish || clean.includes("reposicion"))) ||
+      (mentionsExcelOrSheet && mentionsReplenish)
+    );
+
+  if (isReplenishmentExcelIntent) {
     // 1. Unknown rubro specified
     if (rubroInfo.unknownRubro) {
       const capUnknown = rubroInfo.unknownRubro.charAt(0).toUpperCase() + rubroInfo.unknownRubro.slice(1);
@@ -524,10 +606,9 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
 
     // 2. Missing rubro
     if (!rubroInfo.canonical) {
-      const clarificationMessage = rubroInfo.unknownRubro
-        ? `No encontré el rubro *${rubroInfo.unknownRubro}*. Podés pedir reposición de: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, etc.`
-        : "¿De qué rubro querés generar el Excel de reposición? Podés elegir por ejemplo: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, etc.";
-
+      const branchNotice =
+        branchInfo.target === "CENTRO" ? " para *Centro*" :
+        branchInfo.target === "JARDIN" ? " para *Jardín*" : "";
       return {
         type: "REPLENISHMENT_EXCEL",
         rawText: text,
@@ -536,20 +617,39 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
           wantsExcel: true,
           needsClarification: true,
           clarificationType: "RUBRO",
-          clarificationMessage,
+          clarificationMessage: `¿De qué rubro querés generar el Excel de reposición${branchNotice}? Podés elegir por ejemplo: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros.`,
           pendingIntentType: "REPLENISHMENT_EXCEL",
         },
         confidence: 0.95,
       };
     }
 
-    // 3. Rubro is known, check branch (must be Centro or Jardín)
+    // 3. Rubro is known, check branch
+    const invalidBranch = extractInvalidBranch(text);
+    if (invalidBranch) {
+      const formattedRubro = formatRubroLabel(rubroInfo.canonical);
+      return {
+        type: "REPLENISHMENT_EXCEL",
+        rawText: text,
+        slots: {
+          ...slots,
+          targetRubro: rubroInfo.canonical,
+          wantsExcel: true,
+          needsClarification: true,
+          clarificationType: "BRANCH",
+          clarificationMessage: `No reconozco la sucursal *${invalidBranch}*. Las sucursales disponibles son *Centro* o *Jardín* (abastecidas por el *Depósito Central*). ¿Para cuál querés generar el Excel de *${formattedRubro}*?`,
+          pendingIntentType: "REPLENISHMENT_EXCEL",
+        },
+        confidence: 0.95,
+      };
+    }
+
     if (branchInfo.target === "ALL" || branchInfo.target === "DEPOSITO") {
       const formattedRubro = formatRubroLabel(rubroInfo.canonical);
       const msg =
         branchInfo.target === "DEPOSITO"
           ? `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál querés generar el Excel de *${formattedRubro}*?`
-          : `Para generar el Excel de reposición de *${formattedRubro}*, por favor indicame para qué sucursal querés generarlo: *Centro* o *Jardín*.`;
+          : `Para generar el Excel de reposición de *${formattedRubro}*, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`;
 
       return {
         type: "REPLENISHMENT_EXCEL",
@@ -574,6 +674,8 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
       slots: {
         ...slots,
         targetRubro: rubroInfo.canonical,
+        branchTarget: branchInfo.target,
+        branchId: branchInfo.branchId,
         wantsExcel: true,
         needsClarification: false,
       },
@@ -661,7 +763,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
 
   // 15. RESUMEN / MÉTRICAS GENERALES
   if (
-    /\b(resumen|balance|metricas|movimientos del mes|como venimos|que paso durante|ventas de|evolucion)\b/.test(clean)
+    /\b(resumen|balance|metricas|movimientos del mes|como venimos|que paso durante|ventas|evolucion)\b/.test(clean)
   ) {
     return { type: "METRICS_SUMMARY", rawText: text, slots, confidence: 0.9 };
   }

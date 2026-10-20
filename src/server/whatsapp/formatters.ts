@@ -517,6 +517,8 @@ export function formatGreetingMessage(name?: string): string {
     "Consultá qué productos se recomienda reponer en cada sucursal, según la información disponible.\n\n" +
     "📊 *4. Resúmenes del negocio*\n" +
     "Consultá indicadores y movimientos disponibles en el sistema.\n\n" +
+    "📑 *5. Excel de reposición por rubro y sucursal*\n" +
+    "Generá la planilla lista para armar el pedido indicando el rubro y la sucursal (por ejemplo: _«Excel de cigarrillos para Centro»_ o _«Quiero la planilla de bebidas para Jardín»_).\n\n" +
     "Podés escribirme una pregunta directamente o pedirme `ayuda` para ver estas opciones.\n\n" +
     "_Si una función todavía no está disponible, te lo voy a indicar._"
   );
@@ -557,8 +559,8 @@ export function formatUnknownMessage(): string {
     "• *1. Stock:* _«Stock alfajor»_, _«Art 1052»_, _«Stock bajo en Depósito Central»_\n" +
     "• *2. Pedidos:* _«¿Qué pedidos hay?»_, _«Pedidos pendientes»_, _«Detalle del pedido 2»_\n" +
     "• *3. Reposición:* _«Reposición semanal»_, _«Reposición Centro»_, _«Reposición Jardín»_\n" +
-    "• *Excel de reposición:* _«Mandame un Excel con la reposición de Chocolates»_\n" +
-    "• *4. Resumen:* _«Resumen del negocio»_, _«¿Cómo estamos de stock?»_\n\n" +
+    "• *4. Resumen:* _«Resumen del negocio»_, _«¿Cómo estamos de stock?»_\n" +
+    "• *5. Excel de reposición:* _«Excel de cigarrillos para Centro»_, _«Planilla de bebidas para Jardín»_\n\n" +
     "_Escribí `ayuda` para ver las opciones completas o haceme una pregunta directa._"
   );
 }

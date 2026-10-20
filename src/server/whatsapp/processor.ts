@@ -1,6 +1,6 @@
 import { getSenderContext, maskPhone } from "./auth";
 import { registerIncomingMessage, markMessageProcessed, markMessageFailed } from "./deduplication";
-import { parseUserMessage } from "./router";
+import { parseUserMessage, formatRubroLabel } from "./router";
 import type { ParsedIntent } from "./types";
 import {
   clearPendingClarification,
@@ -200,8 +200,36 @@ export async function processIncomingMessage(
       }
 
       case "REPLENISHMENT_EXCEL": {
-        const branchId = intent.slots.branchId || 2;
-        const targetRubro = intent.slots.targetRubro || "CHOCOLATES";
+        const targetRubro = intent.slots.targetRubro;
+        const branchId = intent.slots.branchId;
+
+        if (!targetRubro) {
+          replyText = formatClarificationMessage(
+            "¿De qué rubro querés generar el Excel de reposición? Podés elegir por ejemplo: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros."
+          );
+          setPendingClarification(senderPhone, {
+            intentType: "REPLENISHMENT_EXCEL",
+            slots: intent.slots,
+            clarificationType: "RUBRO",
+          });
+          break;
+        }
+
+        if (!branchId || (branchId !== 2 && branchId !== 3)) {
+          const rubroLabel = formatRubroLabel(targetRubro);
+          replyText = formatClarificationMessage(
+            branchId === 1
+              ? `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál querés generar el Excel de *${rubroLabel}*?`
+              : `Para generar el Excel de reposición de *${rubroLabel}*, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`
+          );
+          setPendingClarification(senderPhone, {
+            intentType: "REPLENISHMENT_EXCEL",
+            slots: { ...intent.slots, targetRubro },
+            clarificationType: "BRANCH",
+          });
+          break;
+        }
+
         const excelData = await queryReplenishmentExcelData(branchId, targetRubro);
 
         if (!excelData.excelBuffer || excelData.totalEligible === 0) {

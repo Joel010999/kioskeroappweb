@@ -235,6 +235,16 @@ describe("WhatsApp NLP Router & Intent Parsing", () => {
       const res = parseUserMessage("4", refDate);
       expect(res.type).toBe("METRICS_SUMMARY");
     });
+
+    it("handles option 5 as replenishment excel requiring rubro", () => {
+      const res = parseUserMessage("5", refDate);
+      expect(res.type).toBe("REPLENISHMENT_EXCEL");
+      expect(res.slots.wantsExcel).toBe(true);
+      expect(res.slots.needsClarification).toBe(true);
+      expect(res.slots.clarificationType).toBe("RUBRO");
+      expect(res.slots.clarificationMessage).toContain("Chocolates");
+      expect(res.slots.clarificationMessage).toContain("Centro");
+    });
   });
 
   describe("Next Delivery & Ambiguous Queries", () => {
