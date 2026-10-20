@@ -194,18 +194,25 @@ export async function processIncomingMessage(
 
       case "REPLENISHMENT": {
         const branchId = intent.slots.branchId || 2;
-        const replData = await queryReplenishment(branchId, intent.slots.targetRubro);
+        const replData = await queryReplenishment(
+          branchId,
+          intent.slots.targetRubro,
+          intent.slots.supplierCode,
+          intent.slots.supplierName
+        );
         replyText = formatReplenishmentResponse(replData);
         break;
       }
 
       case "REPLENISHMENT_EXCEL": {
         const targetRubro = intent.slots.targetRubro;
+        const supplierCode = intent.slots.supplierCode;
+        const supplierName = intent.slots.supplierName;
         const branchId = intent.slots.branchId;
 
-        if (!targetRubro) {
+        if (!targetRubro && !supplierCode) {
           replyText = formatClarificationMessage(
-            "¿De qué rubro querés generar el Excel de reposición? Podés elegir por ejemplo: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros."
+            "Para generar el Excel de reposición, podés indicarme el rubro (ej. *Chocolates*, *Galletitas*, *Bebidas*, *Cigarrillos*) o el proveedor (ej. *Arcor*, *Baggio*, *50350*)."
           );
           setPendingClarification(senderPhone, {
             intentType: "REPLENISHMENT_EXCEL",
@@ -216,35 +223,52 @@ export async function processIncomingMessage(
         }
 
         if (!branchId || (branchId !== 2 && branchId !== 3)) {
-          const rubroLabel = formatRubroLabel(targetRubro);
+          const targetDesc =
+            targetRubro && (supplierName || supplierCode)
+              ? `de *${formatRubroLabel(targetRubro)}* del proveedor *${supplierName || supplierCode}*`
+              : supplierName || supplierCode
+              ? `del proveedor *${supplierName || supplierCode}*`
+              : `de *${formatRubroLabel(targetRubro!)}*`;
+
           replyText = formatClarificationMessage(
             branchId === 1
-              ? `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál querés generar el Excel de *${rubroLabel}*?`
-              : `Para generar el Excel de reposición de *${rubroLabel}*, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`
+              ? `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál querés generar el Excel ${targetDesc}?`
+              : `Para generar el Excel de reposición ${targetDesc}, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`
           );
           setPendingClarification(senderPhone, {
             intentType: "REPLENISHMENT_EXCEL",
-            slots: { ...intent.slots, targetRubro },
+            slots: { ...intent.slots, targetRubro, supplierCode, supplierName },
             clarificationType: "BRANCH",
           });
           break;
         }
 
-        const excelData = await queryReplenishmentExcelData(branchId, targetRubro);
+        const excelData = await queryReplenishmentExcelData({
+          branchId,
+          rubro: targetRubro,
+          supplierCode,
+          supplierName,
+        });
 
         if (!excelData.excelBuffer || excelData.totalEligible === 0) {
           replyText = formatReplenishmentExcelEmptyMessage({
             rubro: excelData.rubro,
+            supplierCode: excelData.supplierCode,
+            supplierName: excelData.supplierName,
             branchName: excelData.branchName,
             negativeStockCount: excelData.negativeStockCount,
             negativeStockProducts: excelData.negativeStockProducts,
           });
         } else {
-          const cleanRubro = excelData.rubro.replace(/\s+/g, "_").toUpperCase();
+          const cleanRubro = excelData.rubro ? excelData.rubro.replace(/\s+/g, "_").toUpperCase() : "";
+          const cleanSupplier = (excelData.supplierName || (excelData.supplierCode ? `PROV_${excelData.supplierCode}` : "")).replace(/\s+/g, "_").toUpperCase();
           const cleanBranch = excelData.branchName.replace(/\s+/g, "_").toUpperCase();
-          const fileName = `REPOSICION_${cleanRubro}_${cleanBranch}_${excelData.planningDate}.xlsx`;
+          const cleanTarget = cleanRubro && cleanSupplier ? `${cleanRubro}_${cleanSupplier}` : cleanSupplier || cleanRubro || "GENERAL";
+          const fileName = `REPOSICION_${cleanTarget}_${cleanBranch}_${excelData.planningDate}.xlsx`;
           const caption = formatReplenishmentExcelCaption({
             rubro: excelData.rubro,
+            supplierCode: excelData.supplierCode,
+            supplierName: excelData.supplierName,
             branchName: excelData.branchName,
             totalEligible: excelData.totalEligible,
             planningDate: excelData.planningDate,

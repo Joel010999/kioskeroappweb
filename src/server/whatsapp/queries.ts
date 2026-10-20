@@ -10,6 +10,8 @@ import {
   type ReplenishmentExportItem,
 } from "@/features/excel/order-export";
 import { resolveRubroName } from "@/server/catalog/rubros";
+import { calculateProductSimilarity, resolveKnownAlias } from "@/server/catalog/fuzzy-search";
+import { resolveSupplier } from "@/server/catalog/suppliers";
 import type { BranchTarget } from "./types";
 
 const DEFAULT_ORG_ID = 1;
@@ -49,7 +51,7 @@ export type ProductStockItem = {
 
 /**
  * Queries stock of a product across all 3 locations (Depósito, Centro, Jardín)
- * or for a specific location.
+ * or for a specific location. Employs exact, alias, and fuzzy error-tolerant matching.
  */
 export async function queryProductStock(
   search: { articleId?: number; productSearch?: string },
@@ -70,7 +72,7 @@ export async function queryProductStock(
     where += ` AND (p.payload->>'Descripcion' ILIKE $${values.length} OR p.payload->>'Marca' ILIKE $${values.length} OR p.article_id::text ILIKE $${values.length})`;
   }
 
-  const productsRes = await query<{
+  let productsRes = await query<{
     article_id: number;
     description: string;
     brand: string | null;
@@ -89,6 +91,96 @@ export async function queryProductStock(
      LIMIT 5`,
     values
   );
+
+  // 1.1 Error tolerance: if 0 results and productSearch is provided, try canonical aliases and fuzzy search
+  if (productsRes.rows.length === 0 && search.productSearch) {
+    const rawSearch = search.productSearch.trim();
+    const alias = resolveKnownAlias(rawSearch);
+
+    // Try canonical alias if available
+    if (alias && alias.toLowerCase() !== rawSearch.toLowerCase()) {
+      const aliasRes = await query<{
+        article_id: number;
+        description: string;
+        brand: string | null;
+        rubro: string | null;
+        bulto: string | null;
+      }>(
+        `SELECT DISTINCT ON (p.article_id)
+           p.article_id,
+           COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
+           p.payload->>'Marca' AS brand,
+           p.payload->>'Rubro' AS rubro,
+           p.payload->>'Bulto' AS bulto
+         FROM products_raw p
+         WHERE p.organization_id = $1 AND p.is_present = true
+           AND (p.payload->>'Descripcion' ILIKE $2 OR p.payload->>'Marca' ILIKE $2)
+         ORDER BY p.article_id, p.branch_id
+         LIMIT 5`,
+        [orgId, `%${alias}%`]
+      );
+      if (aliasRes.rows.length > 0) {
+        productsRes = aliasRes;
+      }
+    }
+
+    // If still 0, try token-based candidate search with fuzzy scoring (skip if text contains SQL injection patterns)
+    if (productsRes.rows.length === 0 && !/[;]|--|\/\*/.test(rawSearch) && rawSearch.length >= 3) {
+      const tokens = rawSearch.split(/\s+/).filter((t) => t.length >= 3);
+      const orClauses: string[] = [];
+      const tokenValues: unknown[] = [orgId];
+
+      for (const token of tokens) {
+        tokenValues.push(`%${token}%`);
+        orClauses.push(
+          `p.payload->>'Descripcion' ILIKE $${tokenValues.length} OR p.payload->>'Marca' ILIKE $${tokenValues.length}`
+        );
+        // If token has >= 4 chars, also search on 3-char prefix to catch single-letter typos
+        if (token.length >= 4) {
+          tokenValues.push(`%${token.slice(0, 3)}%`);
+          orClauses.push(
+            `p.payload->>'Descripcion' ILIKE $${tokenValues.length} OR p.payload->>'Marca' ILIKE $${tokenValues.length}`
+          );
+        }
+      }
+
+      if (orClauses.length > 0) {
+        const broadRes = await query<{
+          article_id: number;
+          description: string;
+          brand: string | null;
+          rubro: string | null;
+          bulto: string | null;
+        }>(
+          `SELECT DISTINCT ON (p.article_id)
+             p.article_id,
+             COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
+             p.payload->>'Marca' AS brand,
+             p.payload->>'Rubro' AS rubro,
+             p.payload->>'Bulto' AS bulto
+           FROM products_raw p
+           WHERE p.organization_id = $1 AND p.is_present = true
+             AND (${orClauses.join(" OR ")})
+           LIMIT 50`,
+          tokenValues
+        );
+
+        if (broadRes.rows.length > 0) {
+          const scored = broadRes.rows
+            .map((p) => ({
+              product: p,
+              match: calculateProductSimilarity(rawSearch, p.description, p.brand),
+            }))
+            .filter((item) => item.match.score >= 0.65)
+            .sort((a, b) => b.match.score - a.match.score);
+
+          if (scored.length > 0) {
+            productsRes = { rows: scored.slice(0, 5).map((s) => s.product) } as any;
+          }
+        }
+      }
+    }
+  }
 
   if (productsRes.rows.length === 0) {
     return { items: [], totalFound: 0 };
@@ -312,14 +404,19 @@ export async function queryStockAlerts(
 
 /**
  * Queries weekly replenishment suggestions for Centro or Jardín.
+ * Supports filtering by targetRubro and/or targetSupplierCode.
  */
 export async function queryReplenishment(
   branchId: number,
-  targetRubro?: string
+  targetRubro?: string,
+  targetSupplierCode?: string,
+  targetSupplierName?: string
 ): Promise<{
   branchName: string;
   planningDate: string;
   rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
   items: Array<{
     articleId: number;
     description: string;
@@ -340,6 +437,7 @@ export async function queryReplenishment(
     depotSourceId: depotScope.sourceId,
     planningDate,
     rubro: targetRubro,
+    supplier: targetSupplierCode,
     filter: "TO_REPLENISH",
     limit: 10,
     offset: 0,
@@ -351,6 +449,8 @@ export async function queryReplenishment(
     branchName,
     planningDate,
     rubro: targetRubro,
+    supplierCode: targetSupplierCode,
+    supplierName: targetSupplierName,
     items: replenishment.items.map((row) => ({
       articleId: row.article_id,
       description: row.description ?? `Artículo ${row.article_id}`,
@@ -364,11 +464,20 @@ export async function queryReplenishment(
   };
 }
 
+export type ReplenishmentExcelQueryInput = {
+  branchId: number;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
+};
+
 export type ReplenishmentExcelQueryResult = {
   branchName: string;
   branchId: number;
   planningDate: string;
-  rubro: string;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
   totalEligible: number;
   negativeStockCount: number;
   negativeStockProducts?: Array<{
@@ -381,25 +490,51 @@ export type ReplenishmentExcelQueryResult = {
 };
 
 /**
- * Queries all replenishment items for a rubro and branch without truncation (limit: 5000),
+ * Queries all replenishment items for a rubro, supplier, and/or branch without truncation (limit: 5000),
  * separates items with negative stock requiring manual review, applies mandatory export
  * eligibility rules, and generates the .xlsx binary buffer using existing export logic.
  */
 export async function queryReplenishmentExcelData(
-  branchId: number,
-  rubro: string
+  branchIdOrOptions: number | ReplenishmentExcelQueryInput,
+  rubroOrOptions?: string | { supplierCode?: string; supplierName?: string; rubro?: string },
+  maybeSupplierCode?: string,
+  maybeSupplierName?: string
 ): Promise<ReplenishmentExcelQueryResult> {
+  let branchId: number;
+  let rubro: string | undefined;
+  let supplierCode: string | undefined;
+  let supplierName: string | undefined;
+
+  if (typeof branchIdOrOptions === "object") {
+    branchId = branchIdOrOptions.branchId;
+    rubro = branchIdOrOptions.rubro;
+    supplierCode = branchIdOrOptions.supplierCode;
+    supplierName = branchIdOrOptions.supplierName;
+  } else {
+    branchId = branchIdOrOptions;
+    if (typeof rubroOrOptions === "string") {
+      rubro = rubroOrOptions;
+      supplierCode = maybeSupplierCode;
+      supplierName = maybeSupplierName;
+    } else if (rubroOrOptions && typeof rubroOrOptions === "object") {
+      rubro = rubroOrOptions.rubro;
+      supplierCode = rubroOrOptions.supplierCode;
+      supplierName = rubroOrOptions.supplierName;
+    }
+  }
+
   const scope = await resolveScope(branchId);
   const depotScope = await resolveScope(DEPOT_BRANCH_ID);
   const planningDate = "2026-10-24";
   const branchName = branchId === 2 ? "Centro" : branchId === 3 ? "Jardín" : `Sucursal ${branchId}`;
 
-  // Query all items for this rubro across all pages without silent truncation
+  // Query all items for this rubro/supplier across all pages without silent truncation
   const replenishment = await getWeeklyReplenishment({
     scope,
     depotSourceId: depotScope.sourceId,
     planningDate,
-    rubro,
+    rubro: rubro ? rubro : undefined,
+    supplier: supplierCode ? supplierCode : undefined,
     filter: "TO_REPLENISH",
     limit: 5000,
     offset: 0,
@@ -431,7 +566,7 @@ export async function queryReplenishmentExcelData(
     // Differentiate clearly: requested_quantity is the intended order quantity,
     // which for initial suggestion equals suggested_quantity (or 0 if negative/null)
     const requested = item.requested_quantity > 0 ? item.requested_quantity : (item.suggested_quantity ?? 0);
-    const resolvedRubro = resolveRubroName(item.classification_code, item.rubro) || rubro;
+    const resolvedRubro = resolveRubroName(item.classification_code, item.rubro) || rubro || "Sin rubro";
 
     // Apply mandatory export eligibility rule: incluirEnExcel = seleccionado && cantidadSolicitada > 0
     if (
@@ -462,11 +597,21 @@ export async function queryReplenishmentExcelData(
 
   let excelBuffer: Buffer | null = null;
   if (eligibleExportItems.length > 0) {
+    let title = "Reposición Semanal";
+    if (rubro && supplierCode) {
+      const dispRubro = rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro;
+      title = `Pedido a Depósito - ${dispRubro} (${supplierName || supplierCode})`;
+    } else if (supplierCode) {
+      title = `Pedido a Depósito - Proveedor ${supplierName || supplierCode}`;
+    } else if (rubro) {
+      title = `Pedido a Depósito - ${rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro}`;
+    }
+
     excelBuffer = generateReplenishmentExcelBuffer({
       items: eligibleExportItems,
       branchLabel: branchName,
       planningDate,
-      title: `Pedido a Depósito - ${rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro}`,
+      title,
     });
   }
 
@@ -474,7 +619,9 @@ export async function queryReplenishmentExcelData(
     branchName,
     branchId,
     planningDate,
-    rubro: rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro,
+    rubro: rubro ? (rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro) : undefined,
+    supplierCode,
+    supplierName,
     totalEligible: eligibleExportItems.length,
     negativeStockCount,
     negativeStockProducts,
@@ -570,9 +717,37 @@ export async function queryProductSupplier(search: { articleId?: number; product
 
 /**
  * Queries products associated with a specific supplier name or code.
+ * Leverages resolveSupplier to map brand names (e.g. Arcor, Baggio, Marlboro)
+ * to numeric supplier codes and query real product catalog data.
  */
 export async function querySupplierProducts(supplierSearch: string) {
   const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
+  const resolved = resolveSupplier(supplierSearch);
+
+  let targetCode: string | null = null;
+  let targetName: string = supplierSearch;
+
+  if (resolved.status === "EXACT") {
+    targetCode = resolved.supplier.code;
+    targetName = resolved.supplier.name;
+  } else if (/^\d+$/.test(supplierSearch.trim())) {
+    targetCode = supplierSearch.trim();
+  }
+
+  const values: unknown[] = [orgId];
+  let whereSupplier = "";
+
+  if (targetCode) {
+    values.push(targetCode);
+    const codeIdx = values.length;
+    values.push(`%${targetName}%`);
+    const nameIdx = values.length;
+    whereSupplier = `(p.payload->>'Proveedor' = $${codeIdx} OR s.external_code = $${codeIdx} OR s.name ILIKE $${nameIdx} OR p.payload->>'Marca' ILIKE $${nameIdx})`;
+  } else {
+    values.push(`%${supplierSearch}%`);
+    const searchIdx = values.length;
+    whereSupplier = `(s.name ILIKE $${searchIdx} OR s.external_code ILIKE $${searchIdx} OR p.payload->>'Proveedor' ILIKE $${searchIdx} OR p.payload->>'Marca' ILIKE $${searchIdx})`;
+  }
 
   const res = await query<{
     article_id: number;
@@ -585,14 +760,14 @@ export async function querySupplierProducts(supplierSearch: string) {
        p.article_id,
        COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
        p.payload->>'Proveedor' AS supplier_code,
-       s.name AS supplier_name,
+       COALESCE(s.name, $2) AS supplier_name,
        p.payload->>'Marca' AS brand
      FROM products_raw p
      LEFT JOIN suppliers s ON s.external_code = btrim(p.payload->>'Proveedor') AND s.organization_id = p.organization_id
      WHERE p.organization_id = $1 AND p.is_present = true
-       AND (s.name ILIKE $2 OR s.external_code ILIKE $2 OR p.payload->>'Proveedor' ILIKE $2)
+       AND ${whereSupplier}
      LIMIT 10`,
-    [orgId, `%${supplierSearch}%`]
+    values
   );
 
   return res.rows;

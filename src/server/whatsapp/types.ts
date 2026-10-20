@@ -24,6 +24,15 @@ export type IntentType =
 
 export type BranchTarget = "CENTRO" | "JARDIN" | "DEPOSITO" | "ALL";
 
+export type ClarificationType =
+  | "BRANCH"
+  | "PRODUCT"
+  | "ORDER"
+  | "AMBIGUOUS_PENDING"
+  | "RUBRO"
+  | "SUPPLIER"
+  | "PRODUCT_DISAMBIGUATION";
+
 export type ParsedSlots = {
   branchTarget: BranchTarget;
   branchId?: number; // 1: Depósito, 2: Centro, 3: Jardín
@@ -31,6 +40,8 @@ export type ParsedSlots = {
   articleId?: number;
   orderNumber?: number;
   supplierSearch?: string;
+  supplierCode?: string;
+  supplierName?: string;
   rubroSearch?: string;
   targetRubro?: string;
   wantsExcel?: boolean;
@@ -38,8 +49,9 @@ export type ParsedSlots = {
   period?: Period;
   periodLabel?: string;
   needsClarification?: boolean;
-  clarificationType?: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING" | "RUBRO";
+  clarificationType?: ClarificationType;
   clarificationMessage?: string;
+  disambiguationCandidates?: Array<{ id?: number; code?: string; label: string }>;
   pendingIntentType?: IntentType;
 };
 

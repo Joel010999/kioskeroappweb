@@ -1,17 +1,21 @@
-import type { IntentType, ParsedSlots, ParsedIntent } from "./types";
+import type { IntentType, ParsedSlots, ParsedIntent, ClarificationType } from "./types";
 import { normalizePhoneNumber } from "./auth";
 import {
+  cleanText,
   extractBranch,
+  extractInvalidBranch,
   extractProductSearch,
+  extractSupplierCandidate,
   formatRubroLabel,
   parseUserMessage,
   resolveCanonicalRubroFromText,
 } from "./router";
+import { resolveSupplier } from "@/server/catalog/suppliers";
 
 export type PendingClarification = {
   intentType: IntentType;
   slots: ParsedSlots;
-  clarificationType: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING" | "RUBRO";
+  clarificationType: ClarificationType;
   createdAt: number;
 };
 
@@ -26,7 +30,7 @@ export function setPendingClarification(
   clarification: {
     intentType: IntentType;
     slots: ParsedSlots;
-    clarificationType: "BRANCH" | "PRODUCT" | "ORDER" | "AMBIGUOUS_PENDING" | "RUBRO";
+    clarificationType: ClarificationType;
   }
 ): void {
   const key = normalizePhoneNumber(senderPhone);
@@ -74,6 +78,48 @@ export type ClarificationResolutionResult =
   | { type: "NEW_INTENT" };
 
 /**
+ * Parses user input for numerical disambiguation choices: 1, 2, "el primero", "el segundo", "el otro", etc.
+ */
+function parseDisambiguationChoice(text: string, count: number): number | null {
+  const clean = cleanText(text);
+  if (
+    /^(?:opcion|opción|el|la|el\s+numero|el\s+número|numero|número)?\s*1\b/i.test(clean) ||
+    /^(primero|primera|el primero|la primera)$/i.test(clean)
+  ) {
+    return 0;
+  }
+  if (
+    /^(?:opcion|opción|el|la|el\s+numero|el\s+número|numero|número)?\s*2\b/i.test(clean) ||
+    /^(segundo|segunda|el segundo|la segunda|el otro|la otra|el otro proveedor|otro)$/i.test(clean)
+  ) {
+    return count > 1 ? 1 : null;
+  }
+  if (
+    /^(?:opcion|opción|el|la|el\s+numero|el\s+número|numero|número)?\s*3\b/i.test(clean) ||
+    /^(tercero|tercera|el tercero|la tercera)$/i.test(clean)
+  ) {
+    return count > 2 ? 2 : null;
+  }
+  if (
+    /^(?:opcion|opción|el|la|el\s+numero|el\s+número|numero|número)?\s*4\b/i.test(clean) ||
+    /^(cuarto|cuarta|el cuarto|la cuarta)$/i.test(clean)
+  ) {
+    return count > 3 ? 3 : null;
+  }
+  return null;
+}
+
+/**
+ * Checks if user asks to switch from Excel document to direct chat message.
+ */
+function isSwitchToChatRequest(text: string): boolean {
+  const clean = cleanText(text);
+  return /(?:no quiero\s+(?:el\s+)?excel|no quiero\s+(?:la\s+)?planilla|sin\s+(?:el\s+)?excel|sin\s+(?:la\s+)?planilla|decime(?:lo)?\s+(?:los\s+productos\s+)?por\s+ac[aá]|mostrame(?:lo)?\s+(?:los\s+productos\s+)?por\s+ac[aá]|por\s+ac[aá]|en\s+el\s+chat|por\s+chat|no\s+excel)/i.test(
+    clean
+  );
+}
+
+/**
  * Resolves an incoming message against an existing pending clarification, if any.
  * Prioritizes the pending clarification before interpreting the message as a brand-new intent.
  */
@@ -86,11 +132,13 @@ export function resolvePendingClarification(
     return { type: "NEW_INTENT" };
   }
 
-  const clean = text.trim().toLowerCase();
+  const clean = cleanText(text);
 
   // 1. Explicit cancellation
   if (
-    /^(cancelar|cancela|salir|volver|menu|menú|olvidalo|olvídalo|no importa|chau|adios|adiós)$/i.test(clean)
+    /^(cancelar|cancela|salir|volver|menu|menú|olvidalo|olvídalo|no importa|chau|adios|adiós)$/i.test(
+      clean
+    )
   ) {
     clearPendingClarification(senderPhone);
     return {
@@ -106,7 +154,11 @@ export function resolvePendingClarification(
   }
 
   // 3. Explicit specific order detail: "#3", "pedido 3" -> cancel clarification and process order
-  if (/(?:#|pedido\s*(?:n[°ºo]\s*|numero\s*|número\s*)?|orden\s*(?:n[°ºo]\s*|numero\s*|número\s*)?)\s*\d+/i.test(clean)) {
+  if (
+    /(?:#|pedido\s*(?:n[°ºo]\s*|numero\s*|número\s*)?|orden\s*(?:n[°ºo]\s*|numero\s*|número\s*)?)\s*\d+/i.test(
+      clean
+    )
+  ) {
     clearPendingClarification(senderPhone);
     return { type: "NEW_INTENT" };
   }
@@ -116,20 +168,161 @@ export function resolvePendingClarification(
     const isReplenishmentType =
       pending.intentType === "REPLENISHMENT_EXCEL" || pending.intentType === "REPLENISHMENT";
 
-    // 1. Check if user changed or specified a rubro during branch clarification
+    // A. User wants to switch to text response instead of Excel
+    if (isSwitchToChatRequest(text)) {
+      pending.intentType = "REPLENISHMENT";
+      pending.slots.wantsExcel = false;
+      const branchInfo = extractBranch(clean);
+      const effectiveBranch =
+        branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN"
+          ? branchInfo.target
+          : pending.slots.branchTarget;
+      const effectiveBranchId =
+        branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN"
+          ? branchInfo.branchId
+          : pending.slots.branchId;
+
+      if (effectiveBranch === "CENTRO" || effectiveBranch === "JARDIN") {
+        clearPendingClarification(senderPhone);
+        return {
+          type: "RESOLVED",
+          intent: {
+            type: "REPLENISHMENT",
+            rawText: text,
+            slots: {
+              ...pending.slots,
+              wantsExcel: false,
+              branchTarget: effectiveBranch,
+              branchId: effectiveBranchId,
+              needsClarification: false,
+              clarificationMessage: undefined,
+            },
+            confidence: 0.95,
+          },
+        };
+      }
+      setPendingClarification(senderPhone, {
+        intentType: "REPLENISHMENT",
+        slots: { ...pending.slots, wantsExcel: false },
+        clarificationType: "BRANCH",
+      });
+      return {
+        type: "RE_PROMPT",
+        message:
+          "Entendido, te muestro los productos sugeridos directamente por acá. Por favor indicame para qué sucursal querés ver la reposición: *Centro* o *Jardín*.",
+      };
+    }
+
+    // B. User changes or selects supplier: "No, el otro proveedor" or specifies another supplier
+    if (
+      /^(?:no,?\s*)?(?:el\s+otro\s+proveedor|el\s+otro|el\s+segundo|la\s+otra|otro)$/i.test(clean) &&
+      pending.slots.disambiguationCandidates &&
+      pending.slots.disambiguationCandidates.length >= 2
+    ) {
+      const altCandidate = pending.slots.disambiguationCandidates[1];
+      const branchInfo = extractBranch(clean);
+      const updatedSlots: ParsedSlots = {
+        ...pending.slots,
+        supplierCode: altCandidate.code,
+        supplierName: altCandidate.label,
+        disambiguationCandidates: undefined,
+      };
+
+      if (branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN") {
+        clearPendingClarification(senderPhone);
+        return {
+          type: "RESOLVED",
+          intent: {
+            type: pending.intentType,
+            rawText: text,
+            slots: {
+              ...updatedSlots,
+              branchTarget: branchInfo.target,
+              branchId: branchInfo.branchId,
+              needsClarification: false,
+              clarificationMessage: undefined,
+            },
+            confidence: 0.95,
+          },
+        };
+      }
+
+      setPendingClarification(senderPhone, {
+        ...pending,
+        slots: updatedSlots,
+      });
+
+      return {
+        type: "RE_PROMPT",
+        message: `Entendido, cambiamos a *${altCandidate.label}*. Por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+      };
+    }
+
+    // Check if user specified a new supplier name or code (e.g. "mejor Arcor", "cambialo a Mondelez", "proveedor 50350")
+    const supplierExtraction = extractSupplierCandidate(text);
+    if (supplierExtraction.candidate) {
+      const resSupplier = resolveSupplier(supplierExtraction.candidate);
+      if (resSupplier.status === "EXACT") {
+        const branchInfo = extractBranch(clean);
+        const updatedSlots: ParsedSlots = {
+          ...pending.slots,
+          supplierCode: resSupplier.supplier.code,
+          supplierName: resSupplier.supplier.name,
+        };
+
+        if (branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN") {
+          clearPendingClarification(senderPhone);
+          return {
+            type: "RESOLVED",
+            intent: {
+              type: pending.intentType,
+              rawText: text,
+              slots: {
+                ...updatedSlots,
+                branchTarget: branchInfo.target,
+                branchId: branchInfo.branchId,
+                needsClarification: false,
+                clarificationMessage: undefined,
+              },
+              confidence: 0.95,
+            },
+          };
+        }
+
+        setPendingClarification(senderPhone, {
+          ...pending,
+          slots: updatedSlots,
+        });
+
+        return {
+          type: "RE_PROMPT",
+          message: `Entendido, cambiamos al proveedor *${resSupplier.supplier.name}*. Por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+        };
+      }
+    }
+
+    // C. User changed or specified a rubro during branch clarification (e.g. "Solo los cigarrillos")
     const newRubroInfo = resolveCanonicalRubroFromText(text);
     const targetRubro = newRubroInfo.canonical || pending.slots.targetRubro;
 
     const branchInfo = extractBranch(clean);
+    const effectiveBranch =
+      branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN"
+        ? branchInfo.target
+        : pending.slots.branchTarget;
+    const effectiveBranchId =
+      branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN"
+        ? branchInfo.branchId
+        : pending.slots.branchId;
 
-    if (branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN") {
+    if (effectiveBranch === "CENTRO" || effectiveBranch === "JARDIN") {
       clearPendingClarification(senderPhone);
 
       const updatedSlots: ParsedSlots = {
         ...pending.slots,
         targetRubro,
-        branchTarget: branchInfo.target,
-        branchId: branchInfo.branchId,
+        branchTarget: effectiveBranch,
+        branchId: effectiveBranchId,
         needsClarification: false,
         clarificationMessage: undefined,
       };
@@ -153,10 +346,18 @@ export function resolvePendingClarification(
             slots: { ...pending.slots, targetRubro },
           });
         }
-        const rubroLabel = targetRubro ? formatRubroLabel(targetRubro) : "este rubro";
+        const targetDesc =
+          pending.slots.supplierName && targetRubro
+            ? `de *${formatRubroLabel(targetRubro)}* del proveedor *${pending.slots.supplierName}*`
+            : pending.slots.supplierName
+            ? `del proveedor *${pending.slots.supplierName}*`
+            : targetRubro
+            ? `de *${formatRubroLabel(targetRubro)}*`
+            : "de reposición";
+
         return {
           type: "RE_PROMPT",
-          message: `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál de las dos querés generar el Excel de *${rubroLabel}*?`,
+          message: `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál de las dos querés generar el Excel ${targetDesc}?`,
         };
       }
 
@@ -180,7 +381,7 @@ export function resolvePendingClarification(
       };
     }
 
-    // 2. User switched rubro without giving branch yet
+    // User switched rubro without giving branch yet
     if (newRubroInfo.canonical && newRubroInfo.canonical !== pending.slots.targetRubro) {
       setPendingClarification(senderPhone, {
         ...pending,
@@ -189,11 +390,29 @@ export function resolvePendingClarification(
       const rubroLabel = formatRubroLabel(newRubroInfo.canonical);
       return {
         type: "RE_PROMPT",
-        message: `Entendido, cambiamos al rubro *${rubroLabel}*. Por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`,
+        message: `Entendido, cambiamos al rubro *${rubroLabel}*. Por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
       };
     }
 
-    // 3. Check if user entered an explicit fresh command
+    // Check invalid branch mention: e.g. "Mejor de la sucursal Norte"
+    const invalidBranch = extractInvalidBranch(text);
+    if (invalidBranch || /^(?:sucursal\s+)?(?:norte|sur|oeste|este)\b/i.test(clean)) {
+      const targetDesc =
+        pending.slots.supplierName && targetRubro
+          ? `de *${formatRubroLabel(targetRubro)}* del proveedor *${pending.slots.supplierName}*`
+          : pending.slots.supplierName
+          ? `del proveedor *${pending.slots.supplierName}*`
+          : targetRubro
+          ? `de *${formatRubroLabel(targetRubro)}*`
+          : "de reposición";
+      const branchNotice = invalidBranch ? ` *${invalidBranch}*` : "";
+      return {
+        type: "RE_PROMPT",
+        message: `No reconozco la sucursal${branchNotice}. Las opciones disponibles son *Centro* o *Jardín* (abastecidas por el *Depósito Central*). ¿Para cuál querés el Excel ${targetDesc}? (o escribí 'cancelar' para salir).`,
+      };
+    }
+
+    // Check if user entered an explicit fresh command
     const freshIntent = parseUserMessage(text);
     if (
       freshIntent.type !== "UNKNOWN" &&
@@ -215,7 +434,7 @@ export function resolvePendingClarification(
       }
     }
 
-    // 4. Invalid branch input
+    // Invalid branch input fallback
     const rubroLabel = targetRubro ? formatRubroLabel(targetRubro) : "";
     const rubroSuffix = rubroLabel ? ` de *${rubroLabel}*` : "";
     return {
@@ -224,12 +443,217 @@ export function resolvePendingClarification(
     };
   }
 
-  if (pending.clarificationType === "RUBRO") {
-    // 1. Check if user also provided or updated branch in this reply
+  if (pending.clarificationType === "SUPPLIER") {
+    // 1. Check if user wants to switch to chat / no excel
+    if (isSwitchToChatRequest(text)) {
+      pending.intentType = "REPLENISHMENT";
+      pending.slots.wantsExcel = false;
+    }
+
+    // 2. Check if user selected one of disambiguation candidates (e.g. "1", "2", "el primero", "el segundo", "el otro")
+    if (
+      pending.slots.disambiguationCandidates &&
+      pending.slots.disambiguationCandidates.length > 0
+    ) {
+      const choiceIdx = parseDisambiguationChoice(
+        clean,
+        pending.slots.disambiguationCandidates.length
+      );
+      if (choiceIdx !== null) {
+        const chosen = pending.slots.disambiguationCandidates[choiceIdx];
+        const branchInfo = extractBranch(clean);
+        const branchTarget =
+          branchInfo.target !== "ALL" ? branchInfo.target : pending.slots.branchTarget;
+        const branchId = branchInfo.branchId ?? pending.slots.branchId;
+
+        const updatedSlots: ParsedSlots = {
+          ...pending.slots,
+          supplierCode: chosen.code,
+          supplierName: chosen.label,
+          branchTarget,
+          branchId,
+          needsClarification: false,
+          clarificationMessage: undefined,
+          disambiguationCandidates: undefined,
+        };
+
+        if (branchTarget === "CENTRO" || branchTarget === "JARDIN") {
+          clearPendingClarification(senderPhone);
+          return {
+            type: "RESOLVED",
+            intent: {
+              type: pending.intentType,
+              rawText: text,
+              slots: updatedSlots,
+              confidence: 0.95,
+            },
+          };
+        }
+
+        // Branch still missing: transition to BRANCH clarification
+        setPendingClarification(senderPhone, {
+          intentType: pending.intentType,
+          slots: updatedSlots,
+          clarificationType: "BRANCH",
+        });
+
+        return {
+          type: "RE_PROMPT",
+          message: `Para generar el Excel de reposición de *${chosen.label}*, por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+        };
+      }
+    }
+
+    // 3. User typed a supplier name or code
+    const supplierExtraction = extractSupplierCandidate(text);
+    const candidateStr =
+      supplierExtraction.candidate ||
+      (clean.length >= 2 && !/^(centro|jardin|deposito)$/i.test(clean) ? text.trim() : undefined);
+
+    if (candidateStr) {
+      const res = resolveSupplier(candidateStr);
+      if (res.status === "EXACT") {
+        const branchInfo = extractBranch(clean);
+        const branchTarget =
+          branchInfo.target !== "ALL" ? branchInfo.target : pending.slots.branchTarget;
+        const branchId = branchInfo.branchId ?? pending.slots.branchId;
+
+        const updatedSlots: ParsedSlots = {
+          ...pending.slots,
+          supplierCode: res.supplier.code,
+          supplierName: res.supplier.name,
+          branchTarget,
+          branchId,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        };
+
+        if (branchTarget === "CENTRO" || branchTarget === "JARDIN") {
+          clearPendingClarification(senderPhone);
+          return {
+            type: "RESOLVED",
+            intent: {
+              type: pending.intentType,
+              rawText: text,
+              slots: updatedSlots,
+              confidence: 0.95,
+            },
+          };
+        }
+
+        setPendingClarification(senderPhone, {
+          intentType: pending.intentType,
+          slots: updatedSlots,
+          clarificationType: "BRANCH",
+        });
+
+        return {
+          type: "RE_PROMPT",
+          message: `Para generar el Excel de reposición del proveedor *${res.supplier.name}*, por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+        };
+      } else if (res.status === "AMBIGUOUS") {
+        const optionsList = res.candidates
+          .map((c, i) => `*${i + 1}. ${c.name}* (cód. ${c.code})`)
+          .join(", ");
+        setPendingClarification(senderPhone, {
+          ...pending,
+          slots: {
+            ...pending.slots,
+            disambiguationCandidates: res.candidates.map((c) => ({
+              code: c.code,
+              label: c.name,
+            })),
+          },
+        });
+        return {
+          type: "RE_PROMPT",
+          message: `Encontré varios proveedores posibles para *${candidateStr}*: ${optionsList}. ¿Cuál querés consultar?`,
+        };
+      }
+    }
+
+    // 4. Check if user actually specified a rubro instead
+    const rubroInfo = resolveCanonicalRubroFromText(text);
+    if (rubroInfo.canonical) {
+      const branchInfo = extractBranch(clean);
+      const branchTarget =
+        branchInfo.target !== "ALL" ? branchInfo.target : pending.slots.branchTarget;
+      const branchId = branchInfo.branchId ?? pending.slots.branchId;
+
+      const updatedSlots: ParsedSlots = {
+        ...pending.slots,
+        targetRubro: rubroInfo.canonical,
+        branchTarget,
+        branchId,
+        needsClarification: false,
+        clarificationMessage: undefined,
+      };
+
+      if (branchTarget === "CENTRO" || branchTarget === "JARDIN") {
+        clearPendingClarification(senderPhone);
+        return {
+          type: "RESOLVED",
+          intent: {
+            type: pending.intentType,
+            rawText: text,
+            slots: updatedSlots,
+            confidence: 0.95,
+          },
+        };
+      }
+
+      setPendingClarification(senderPhone, {
+        intentType: pending.intentType,
+        slots: updatedSlots,
+        clarificationType: "BRANCH",
+      });
+
+      return {
+        type: "RE_PROMPT",
+        message: `Para generar el Excel de reposición de *${formatRubroLabel(
+          rubroInfo.canonical
+        )}*, por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+      };
+    }
+
+    // 5. User gave branch only
     const branchInfo = extractBranch(clean);
-    const updatedBranchTarget = branchInfo.target !== "ALL" ? branchInfo.target : pending.slots.branchTarget;
+    if (branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN") {
+      setPendingClarification(senderPhone, {
+        ...pending,
+        slots: {
+          ...pending.slots,
+          branchTarget: branchInfo.target,
+          branchId: branchInfo.branchId,
+        },
+      });
+      const bLabel = branchInfo.target === "CENTRO" ? "Centro" : "Jardín";
+      return {
+        type: "RE_PROMPT",
+        message: `Para generar el Excel de reposición de *${bLabel}*, ¿de qué proveedor lo necesitás? Podés ingresar el nombre (ej. *Arcor*, *Baggio*, *Coca-Cola*) o el código numérico.`,
+      };
+    }
+
+    return {
+      type: "RE_PROMPT",
+      message: `No encontré ese proveedor. Podés ingresar el nombre de la empresa o marca (ej. *Arcor*, *Baggio*, *Coca-Cola*, *Marlboro*) o su código numérico (ej. *50350*), o escribir 'cancelar' para salir.`,
+    };
+  }
+
+  if (pending.clarificationType === "RUBRO") {
+    // A. Switch to chat
+    if (isSwitchToChatRequest(text)) {
+      pending.intentType = "REPLENISHMENT";
+      pending.slots.wantsExcel = false;
+    }
+
+    // B. Check if user also provided or updated branch in this reply
+    const branchInfo = extractBranch(clean);
+    const updatedBranchTarget =
+      branchInfo.target !== "ALL" ? branchInfo.target : pending.slots.branchTarget;
     const updatedBranchId = branchInfo.branchId ?? pending.slots.branchId;
 
+    // C. Check rubro
     const rubroInfo = resolveCanonicalRubroFromText(text);
 
     if (rubroInfo.canonical) {
@@ -288,11 +712,75 @@ export function resolvePendingClarification(
 
       return {
         type: "RE_PROMPT",
-        message: `Para generar el Excel de reposición de *${rubroLabel}*, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`,
+        message: `Para generar el Excel de reposición de *${rubroLabel}*, por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
       };
     }
 
-    // 2. User provided only a branch (e.g. "Centro" or "para Jardín")
+    // D. User provided a SUPPLIER instead of a rubro
+    const supplierExtraction = extractSupplierCandidate(text);
+    const supplierCand =
+      supplierExtraction.candidate ||
+      (clean.length >= 2 && !/^(centro|jardin|deposito)$/i.test(clean) ? text.trim() : undefined);
+
+    if (supplierCand) {
+      const res = resolveSupplier(supplierCand);
+      if (res.status === "EXACT") {
+        const updatedSlots: ParsedSlots = {
+          ...pending.slots,
+          supplierCode: res.supplier.code,
+          supplierName: res.supplier.name,
+          branchTarget: updatedBranchTarget,
+          branchId: updatedBranchId,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        };
+
+        if (updatedBranchTarget === "CENTRO" || updatedBranchTarget === "JARDIN") {
+          clearPendingClarification(senderPhone);
+          return {
+            type: "RESOLVED",
+            intent: {
+              type: pending.intentType,
+              rawText: text,
+              slots: updatedSlots,
+              confidence: 0.95,
+            },
+          };
+        }
+
+        setPendingClarification(senderPhone, {
+          intentType: pending.intentType,
+          slots: updatedSlots,
+          clarificationType: "BRANCH",
+        });
+
+        return {
+          type: "RE_PROMPT",
+          message: `Para generar el Excel de reposición de *${res.supplier.name}*, por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+        };
+      } else if (res.status === "AMBIGUOUS") {
+        const optionsList = res.candidates
+          .map((c, i) => `*${i + 1}. ${c.name}* (cód. ${c.code})`)
+          .join(", ");
+        setPendingClarification(senderPhone, {
+          intentType: pending.intentType,
+          slots: {
+            ...pending.slots,
+            disambiguationCandidates: res.candidates.map((c) => ({
+              code: c.code,
+              label: c.name,
+            })),
+          },
+          clarificationType: "SUPPLIER",
+        });
+        return {
+          type: "RE_PROMPT",
+          message: `Encontré varios proveedores posibles para *${supplierCand}*: ${optionsList}. ¿Cuál querés consultar?`,
+        };
+      }
+    }
+
+    // E. User provided only a branch (e.g. "Centro" or "para Jardín")
     if (branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN") {
       setPendingClarification(senderPhone, {
         ...pending,
@@ -305,11 +793,11 @@ export function resolvePendingClarification(
       const bLabel = branchInfo.target === "CENTRO" ? "Centro" : "Jardín";
       return {
         type: "RE_PROMPT",
-        message: `Para generar el Excel de reposición de *${bLabel}*, ¿de qué rubro lo necesitás? Podés elegir entre: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros.`,
+        message: `Para generar el Excel de reposición de *${bLabel}*, podés indicarme el rubro (ej. *Chocolates*, *Galletitas*, *Bebidas*, *Cigarrillos*) o el proveedor (ej. *Arcor*, *Baggio*, *50350*).`,
       };
     }
 
-    // 3. User entered an explicit other command
+    // F. User entered an explicit other command
     const freshIntent = parseUserMessage(text);
     if (
       freshIntent.type !== "UNKNOWN" &&
@@ -331,18 +819,69 @@ export function resolvePendingClarification(
       }
     }
 
-    // 4. Invalid or unrecognized rubro
+    // G. Invalid or unrecognized rubro
     const candidateName =
       rubroInfo.unknownRubro ||
       (clean.length >= 3 && clean.length <= 25 ? text.trim() : "");
     const unknownNotice = candidateName
-      ? `No encontré el rubro *${candidateName}*. `
-      : "No reconocí el rubro ingresado. ";
+      ? `No encontré el rubro o proveedor *${candidateName}*. `
+      : "No reconocí el rubro o proveedor ingresado. ";
 
     return {
       type: "RE_PROMPT",
-      message: `${unknownNotice}Los rubros disponibles en el catálogo son: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros (o escribí 'cancelar' para salir).`,
+      message: `${unknownNotice}Podés elegir un rubro (ej: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*) o un proveedor (ej: *Arcor*, *Baggio*, *Coca-Cola*, *50350*), o escribir 'cancelar' para salir.`,
     };
+  }
+
+  if (pending.clarificationType === "PRODUCT_DISAMBIGUATION") {
+    if (
+      pending.slots.disambiguationCandidates &&
+      pending.slots.disambiguationCandidates.length > 0
+    ) {
+      const choiceIdx = parseDisambiguationChoice(
+        clean,
+        pending.slots.disambiguationCandidates.length
+      );
+      if (choiceIdx !== null) {
+        const chosen = pending.slots.disambiguationCandidates[choiceIdx];
+        clearPendingClarification(senderPhone);
+        return {
+          type: "RESOLVED",
+          intent: {
+            type: pending.intentType,
+            rawText: text,
+            slots: {
+              ...pending.slots,
+              articleId: chosen.id,
+              productSearch: undefined,
+              needsClarification: false,
+              clarificationMessage: undefined,
+              disambiguationCandidates: undefined,
+            },
+            confidence: 0.95,
+          },
+        };
+      }
+    }
+
+    const productExtraction = extractProductSearch(text);
+    if (productExtraction.articleId || productExtraction.productSearch) {
+      clearPendingClarification(senderPhone);
+      return {
+        type: "RESOLVED",
+        intent: {
+          type: pending.intentType,
+          rawText: text,
+          slots: {
+            ...pending.slots,
+            ...productExtraction,
+            needsClarification: false,
+            clarificationMessage: undefined,
+          },
+          confidence: 0.95,
+        },
+      };
+    }
   }
 
   if (pending.clarificationType === "AMBIGUOUS_PENDING") {

@@ -123,6 +123,9 @@ export function formatStockAlertsResponse(data: {
 export function formatReplenishmentResponse(data: {
   branchName: string;
   planningDate: string;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
   items: Array<{
     articleId: number;
     description: string;
@@ -133,15 +136,24 @@ export function formatReplenishmentResponse(data: {
   }>;
   totalSuggested: number;
 }): string {
+  const targetLabel =
+    data.rubro && (data.supplierName || data.supplierCode)
+      ? ` — ${formatRubroLabel(data.rubro)} (${data.supplierName || `Proveedor ${data.supplierCode}`})`
+      : data.supplierName || data.supplierCode
+      ? ` — ${data.supplierName || `Proveedor ${data.supplierCode}`}`
+      : data.rubro
+      ? ` — ${formatRubroLabel(data.rubro)}`
+      : "";
+
   if (data.items.length === 0) {
     return (
-      `📋 *Reposición Semanal — Sucursal ${data.branchName}*\n\n` +
+      `📋 *Reposición Semanal${targetLabel} — Sucursal ${data.branchName}*\n\n` +
       `No hay productos pendientes de reposición según la demanda proyectada y el stock actual.`
     );
   }
 
   const lines: string[] = [
-    `📋 *Sugerencias de Reposición — Sucursal ${data.branchName}*`,
+    `📋 *Sugerencias de Reposición${targetLabel} — Sucursal ${data.branchName}*`,
     `_Ciclo proyectado:_ ${formatDate(data.planningDate)}`,
     `_Total a reponer sugerido:_ ${data.totalSuggested} productos\n`,
     "*Principales sugerencias recomendadas:*",
@@ -518,7 +530,8 @@ export function formatGreetingMessage(name?: string): string {
     "📊 *4. Resúmenes del negocio*\n" +
     "Consultá indicadores y movimientos disponibles en el sistema.\n\n" +
     "📑 *5. Excel de reposición por rubro y sucursal*\n" +
-    "Generá la planilla lista para armar el pedido indicando el rubro y la sucursal (por ejemplo: _«Excel de cigarrillos para Centro»_ o _«Quiero la planilla de bebidas para Jardín»_).\n\n" +
+    "Generá la planilla lista para armar el pedido indicando el rubro y la sucursal (por ejemplo: _«Excel de cigarrillos para Centro»_ o _«Quiero la planilla de bebidas para Jardín»_).\n" +
+    "También podés solicitar reposición por proveedor (por ejemplo: _«Excel de Coca-Cola»_ o _«Excel del proveedor 50350»_).\n\n" +
     "Podés escribirme una pregunta directamente o pedirme `ayuda` para ver estas opciones.\n\n" +
     "_Si una función todavía no está disponible, te lo voy a indicar._"
   );
@@ -560,7 +573,7 @@ export function formatUnknownMessage(): string {
     "• *2. Pedidos:* _«¿Qué pedidos hay?»_, _«Pedidos pendientes»_, _«Detalle del pedido 2»_\n" +
     "• *3. Reposición:* _«Reposición semanal»_, _«Reposición Centro»_, _«Reposición Jardín»_\n" +
     "• *4. Resumen:* _«Resumen del negocio»_, _«¿Cómo estamos de stock?»_\n" +
-    "• *5. Excel de reposición:* _«Excel de cigarrillos para Centro»_, _«Planilla de bebidas para Jardín»_\n\n" +
+    "• *5. Excel de reposición:* _«Excel de cigarrillos para Centro»_, _«Planilla de bebidas para Jardín»_, _«Excel de Coca-Cola»_, _«Excel del proveedor 50350»_\n\n" +
     "_Escribí `ayuda` para ver las opciones completas o haceme una pregunta directa._"
   );
 }
@@ -569,7 +582,9 @@ export function formatUnknownMessage(): string {
  * Formats caption for replenishment Excel document sent via WhatsApp.
  */
 export function formatReplenishmentExcelCaption(params: {
-  rubro: string;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
   branchName: string;
   totalEligible: number;
   planningDate: string;
@@ -580,10 +595,25 @@ export function formatReplenishmentExcelCaption(params: {
     currentStock: number;
   }>;
 }): string {
-  const { rubro, branchName, totalEligible, planningDate, negativeStockCount, negativeStockProducts } = params;
-  const rubroLabel = formatRubroLabel(rubro);
+  const { rubro, supplierCode, supplierName, branchName, totalEligible, planningDate, negativeStockCount, negativeStockProducts } = params;
+  const rubroLabel = rubro ? formatRubroLabel(rubro) : "";
+  const supplierDisp = supplierName
+    ? supplierName.toLowerCase().startsWith("proveedor")
+      ? supplierName
+      : `Proveedor ${supplierName}`
+    : supplierCode
+    ? `Proveedor ${supplierCode}`
+    : "";
+
+  const header =
+    rubro && supplierDisp
+      ? `Planilla de Reposición — ${rubroLabel} (${supplierDisp})`
+      : supplierDisp
+      ? `Planilla de Reposición — ${supplierDisp}`
+      : `Planilla de Reposición — ${rubroLabel || "General"}`;
+
   const lines: string[] = [
-    `📊 *Planilla de Reposición — ${rubroLabel}*`,
+    `📊 *${header}*`,
     `📍 *Sucursal:* ${branchName}`,
     `📅 *Planificación:* ${planningDate}`,
     `📦 *Productos a pedir:* ${totalEligible}`,
@@ -611,7 +641,9 @@ export function formatReplenishmentExcelCaption(params: {
  * Formats message when a replenishment Excel query returns 0 eligible products.
  */
 export function formatReplenishmentExcelEmptyMessage(params: {
-  rubro: string;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
   branchName: string;
   negativeStockCount: number;
   negativeStockProducts?: Array<{
@@ -620,9 +652,17 @@ export function formatReplenishmentExcelEmptyMessage(params: {
     currentStock: number;
   }>;
 }): string {
-  const { rubro, branchName, negativeStockCount, negativeStockProducts } = params;
-  const rubroLabel = formatRubroLabel(rubro);
-  let text = `ℹ️ *Reposición — ${rubroLabel} (${branchName})*\n\nNo hay productos con necesidad de reposición en este rubro (todos los artículos cuentan con stock suficiente para cubrir la demanda proyectada).`;
+  const { rubro, supplierCode, supplierName, branchName, negativeStockCount, negativeStockProducts } = params;
+  const rubroLabel = rubro ? formatRubroLabel(rubro) : "";
+  const targetLabel =
+    rubro && (supplierName || supplierCode)
+      ? `${rubroLabel} (${supplierName || `Proveedor ${supplierCode}`})`
+      : supplierName || supplierCode
+      ? supplierName || `Proveedor ${supplierCode}`
+      : rubroLabel || "este criterio";
+
+  const scopePhrase = rubro ? "en este rubro" : "para este proveedor";
+  let text = `ℹ️ *Reposición — ${targetLabel} (${branchName})*\n\nNo hay productos con necesidad de reposición ${scopePhrase} (todos los artículos cuentan con stock suficiente para cubrir la demanda proyectada).`;
 
   if (negativeStockCount > 0) {
     text += `\n\n⚠️ *Atención:* Hay *${negativeStockCount} producto${negativeStockCount === 1 ? "" : "s"} con stock negativo* que requieren revisión manual en la sucursal:`;

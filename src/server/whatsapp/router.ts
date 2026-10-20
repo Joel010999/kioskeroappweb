@@ -1,4 +1,5 @@
 import type { Period } from "@/server/analytics/types";
+import { CANONICAL_SUPPLIERS, resolveSupplier } from "@/server/catalog/suppliers";
 import type { BranchTarget, ParsedIntent, ParsedSlots } from "./types";
 
 /**
@@ -237,6 +238,67 @@ const RUBRO_ALIASES: Array<{ canonical: string; patterns: RegExp[] }> = [
 ];
 
 /**
+ * Extracts candidate supplier mention from text.
+ */
+export function extractSupplierCandidate(text: string): {
+  candidate?: string;
+  isExplicitSupplierKeyword?: boolean;
+  isGenericSupplierReference?: boolean;
+} {
+  const clean = cleanText(text);
+
+  // 1. Explicit numeric supplier code: "proveedor 50350", "prov 50350", "proveedor nro 123", "proveedor: 123"
+  const explicitNumMatch = clean.match(
+    /\b(?:proveedor|prov|proveedores)\s*(?:n[°ºo]\s*|numero\s*|número\s*|id\s*|code\s*|codigo\s*|código\s*)?[:#]?\s*(\d+)\b/i
+  );
+  if (explicitNumMatch && explicitNumMatch[1]) {
+    return { candidate: explicitNumMatch[1], isExplicitSupplierKeyword: true };
+  }
+
+  // 2. Generic supplier references without specific identifier: "este proveedor", "al proveedor", "de este proveedor"
+  if (/\b(?:este\s+proveedor|del\s+proveedor|al\s+proveedor|a\s+este\s+proveedor)\b/i.test(clean)) {
+    // Check if a specific name follows: e.g. "proveedor Arcor"
+    const namedAfterMatch = text.match(
+      /\b(?:proveedor|prov)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s&-]+?)(?:\s+(?:en|para|sucursal|local|rubro|de|del)\b|$)/i
+    );
+    if (namedAfterMatch && namedAfterMatch[1]) {
+      const candidateRaw = namedAfterMatch[1].trim();
+      const cleanCand = cleanText(candidateRaw);
+      const stopWords = new Set(["este", "esta", "estos", "de", "del", "para", "en", "el", "la", "los", "las", "un", "una"]);
+      if (!stopWords.has(cleanCand) && cleanCand.length >= 2) {
+        return { candidate: candidateRaw, isExplicitSupplierKeyword: true };
+      }
+    }
+    return { isGenericSupplierReference: true, isExplicitSupplierKeyword: true };
+  }
+
+  // 3. Named supplier with preposition: "le compramos a X", "pedirle a X", "reponer lo de X", "lo de X", "faltan pedirle a X"
+  const actionMatch = text.match(
+    /\b(?:pedirle\s+a|pedir\s+a|reponer\s+lo\s+de|pedir\s+lo\s+de|lo\s+de|le\s+compramos\s+a|comprar\s+a|faltan\s+pedirle\s+a)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ0-9\s&-]+?)(?:\s+(?:en|para|sucursal|local|rubro)\b|$)/i
+  );
+  if (actionMatch && actionMatch[1]) {
+    const candidateRaw = actionMatch[1].trim();
+    const cleanCand = cleanText(candidateRaw);
+    const stopWords = new Set(["este", "esta", "estos", "el", "la", "los", "las", "un", "una", "centro", "jardin", "deposito"]);
+    if (!stopWords.has(cleanCand) && cleanCand.length >= 3) {
+      return { candidate: candidateRaw, isExplicitSupplierKeyword: false };
+    }
+  }
+
+  // 4. Check known canonical suppliers and aliases in text
+  for (const supplier of CANONICAL_SUPPLIERS) {
+    for (const alias of supplier.aliases) {
+      const regex = new RegExp(`\\b${alias.replace(/\s+/g, "\\s+")}\\b`, "i");
+      if (regex.test(clean)) {
+        return { candidate: alias, isExplicitSupplierKeyword: false };
+      }
+    }
+  }
+
+  return {};
+}
+
+/**
  * Resolves canonical rubro from user text, or identifies unrecognized explicit rubro requests.
  */
 export function resolveCanonicalRubroFromText(text: string): {
@@ -273,6 +335,10 @@ export function resolveCanonicalRubroFromText(text: string): {
         "los", "las", "la", "el", "rubro", "que", "un", "una", "por"
       ]);
       if (!ignored.has(cleanCandidate) && cleanCandidate.length >= 3) {
+        // If candidate resolves to a recognized supplier, do NOT treat it as an unknown rubro
+        if (resolveSupplier(cleanCandidate).status !== "NOT_FOUND") {
+          return {};
+        }
         const formatted = rawCandidate.charAt(0).toUpperCase() + rawCandidate.slice(1);
         return { unknownRubro: formatted };
       }
@@ -445,6 +511,26 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
   const orderNumber = extractOrderNumber(text);
   const periodInfo = resolvePeriodFromText(text, referenceDate);
   const rubroInfo = resolveCanonicalRubroFromText(text);
+  const supplierInfo = extractSupplierCandidate(text);
+
+  let resolvedSupplier: ReturnType<typeof resolveSupplier> | null = null;
+  if (supplierInfo.candidate) {
+    resolvedSupplier = resolveSupplier(supplierInfo.candidate);
+  }
+
+  const resolvedSupplierCode =
+    resolvedSupplier && resolvedSupplier.status === "EXACT"
+      ? resolvedSupplier.supplier.code
+      : supplierInfo.candidate && /^\d+$/.test(supplierInfo.candidate)
+      ? supplierInfo.candidate
+      : undefined;
+
+  const resolvedSupplierName =
+    resolvedSupplier && resolvedSupplier.status === "EXACT"
+      ? resolvedSupplier.supplier.name
+      : supplierInfo.candidate && /^\d+$/.test(supplierInfo.candidate)
+      ? `Proveedor ${supplierInfo.candidate}`
+      : undefined;
 
   const slots: ParsedSlots = {
     branchTarget: branchInfo.target,
@@ -454,6 +540,9 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     periodType: periodInfo.periodType,
     periodLabel: periodInfo.label,
     targetRubro: rubroInfo.canonical,
+    supplierCode: resolvedSupplierCode,
+    supplierName: resolvedSupplierName,
+    supplierSearch: resolvedSupplierName || supplierInfo.candidate || undefined,
   };
 
   // 1. MENU NUMERIC SHORTCUTS (1, 2, 3, 4, 5)
@@ -501,7 +590,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
         needsClarification: true,
         clarificationType: "RUBRO",
         clarificationMessage:
-          "Para generar el Excel de reposición, ¿qué rubro necesitás? Los rubros disponibles son: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros (también podés indicarme la sucursal, ej. _«Galletitas para Centro»_).",
+          "Para generar el Excel de reposición, podés indicarme el rubro (ej. *Chocolates*, *Galletitas*, *Bebidas*, *Cigarrillos*) o el proveedor (ej. *Arcor*, *Baggio*, *50350*) y la sucursal (*Centro* o *Jardín*).",
         pendingIntentType: "REPLENISHMENT_EXCEL",
       },
       confidence: 1.0,
@@ -564,10 +653,13 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     return { type: "ORDERS_RECENT", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 8.5. REPOSICIÓN EN EXCEL (por rubro o general)
-  const mentionsExcelOrSheet = /\b(excel|planilla|archivo|xlsx|sheet|reporte)\b/.test(clean);
-  const mentionsReplenish = /\b(reponer|reposicion|reposición|que hay que reponer|que reponer|sugerencias de reposicion)\b/.test(clean);
-  const mentionsAction = /\b(pasame|mandame|enviame|generame|armame|descargame|descargar|exportar|exportame|bajar|quiero|necesito)\b/.test(clean);
+  // 8.5. REPOSICIÓN EN EXCEL (por rubro, por proveedor o general)
+  const mentionsExcelOrSheet =
+    /\b(excel|planilla|archivo|xlsx|sheet|reporte|descargar|descargame|exportar|exportame|bajar|bajame)\b/.test(clean);
+  const mentionsReplenish =
+    /\b(reponer|reposicion|reposición|que hay que reponer|que reponer|sugerencias de reposicion|faltan pedirle|lo que falta pedirle|falta pedirle|tengo que pedirle|que tengo que pedirle|que tengo que pedir|productos que faltan pedirle|que pedir|que pedirle|falta pedir|falta pedirle|faltan pedir|faltan pedirle)\b/.test(clean);
+  const mentionsAction =
+    /\b(pasame|mandame|enviame|generame|armame|descargame|descargar|exportar|exportame|bajar|quiero|necesito|haceme)\b/.test(clean);
 
   // Guard against queries that explicitly ask for other domains (sales, orders, stock) even if they mention excel
   const isExplicitNonReplenishmentExcel =
@@ -576,18 +668,89 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     /\b(stock|cuanto stock|stock bajo|sin stock)\b/.test(clean) ||
     /\b(cuando se actualizo|de que fecha|fecha del excel|sincronizacion)\b/.test(clean);
 
+  const hasSupplierCandidate = Boolean(
+    supplierInfo.candidate || supplierInfo.isGenericSupplierReference || (resolvedSupplier && resolvedSupplier.status !== "NOT_FOUND")
+  );
+
+  const mentionsPassReplenish =
+    /\b(pasame|mandame|enviame|generame|armame|haceme)\b/.test(clean) &&
+    /\breposicion\b/.test(clean);
+
   const isReplenishmentExcelIntent =
     !isExplicitNonReplenishmentExcel &&
     (
-      (mentionsExcelOrSheet && (mentionsReplenish || Boolean(rubroInfo.canonical || rubroInfo.unknownRubro))) ||
-      (mentionsAction && mentionsReplenish && Boolean(rubroInfo.canonical || rubroInfo.unknownRubro)) ||
-      (mentionsExcelOrSheet && mentionsAction && (mentionsReplenish || clean.includes("reposicion"))) ||
-      (mentionsExcelOrSheet && mentionsReplenish)
+      (mentionsExcelOrSheet && (
+        mentionsReplenish ||
+        Boolean(rubroInfo.canonical || rubroInfo.unknownRubro) ||
+        hasSupplierCandidate ||
+        clean.includes("reposicion") ||
+        mentionsAction
+      )) ||
+      (mentionsPassReplenish && (
+        Boolean(rubroInfo.canonical || rubroInfo.unknownRubro) ||
+        hasSupplierCandidate
+      ))
     );
 
   if (isReplenishmentExcelIntent) {
-    // 1. Unknown rubro specified
-    if (rubroInfo.unknownRubro) {
+    // 1. Generic supplier reference ("este proveedor")
+    if (supplierInfo.isGenericSupplierReference && !resolvedSupplier) {
+      return {
+        type: "REPLENISHMENT_EXCEL",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: true,
+          needsClarification: true,
+          clarificationType: "SUPPLIER",
+          clarificationMessage:
+            "¿De qué proveedor querés generar la planilla de reposición? Podés indicarme el nombre (ej. *Arcor*, *Baggio*, *Coca-Cola*, *Marlboro*) o el código numérico (ej. *50350*).",
+          pendingIntentType: "REPLENISHMENT_EXCEL",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // 2. Ambiguous supplier candidate
+    if (resolvedSupplier && resolvedSupplier.status === "AMBIGUOUS") {
+      const optionsList = resolvedSupplier.candidates
+        .map((c, i) => `*${i + 1}. ${c.name}* (cód. ${c.code})`)
+        .join(", ");
+      return {
+        type: "REPLENISHMENT_EXCEL",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: true,
+          needsClarification: true,
+          clarificationType: "SUPPLIER",
+          clarificationMessage: `Encontré varios proveedores posibles para *${supplierInfo.candidate}*: ${optionsList}. ¿Cuál querés consultar?`,
+          disambiguationCandidates: resolvedSupplier.candidates.map((c) => ({ code: c.code, label: c.name })),
+          pendingIntentType: "REPLENISHMENT_EXCEL",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // 3. Explicitly named supplier that was not found
+    if (resolvedSupplier && resolvedSupplier.status === "NOT_FOUND" && supplierInfo.isExplicitSupplierKeyword) {
+      return {
+        type: "REPLENISHMENT_EXCEL",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: true,
+          needsClarification: true,
+          clarificationType: "SUPPLIER",
+          clarificationMessage: `No encontré ningún proveedor con el nombre o código *${supplierInfo.candidate}*. Podés ingresar el código numérico (ej. *50350*) o marcas reconocidas (ej. *Arcor*, *Baggio*, *Energizer*, *Marlboro*, *Milka*).`,
+          pendingIntentType: "REPLENISHMENT_EXCEL",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // 4. Unknown rubro specified (when no supplier was specified)
+    if (rubroInfo.unknownRubro && !slots.supplierCode) {
       const capUnknown = rubroInfo.unknownRubro.charAt(0).toUpperCase() + rubroInfo.unknownRubro.slice(1);
       return {
         type: "REPLENISHMENT_EXCEL",
@@ -604,8 +767,32 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
       };
     }
 
-    // 2. Missing rubro
-    if (!rubroInfo.canonical) {
+    // 5. Check invalid branch if mentioned
+    const invalidBranch = extractInvalidBranch(text);
+    if (invalidBranch) {
+      const targetDesc = slots.supplierName
+        ? `del proveedor *${slots.supplierName}*`
+        : rubroInfo.canonical
+        ? `de *${formatRubroLabel(rubroInfo.canonical)}*`
+        : "de reposición";
+      return {
+        type: "REPLENISHMENT_EXCEL",
+        rawText: text,
+        slots: {
+          ...slots,
+          targetRubro: rubroInfo.canonical,
+          wantsExcel: true,
+          needsClarification: true,
+          clarificationType: "BRANCH",
+          clarificationMessage: `No reconozco la sucursal *${invalidBranch}*. Las sucursales disponibles son *Centro* o *Jardín* (abastecidas por el *Depósito Central*). ¿Para cuál querés generar el Excel ${targetDesc}?`,
+          pendingIntentType: "REPLENISHMENT_EXCEL",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // 6. If neither rubro nor supplier is provided: ask clarification
+    if (!rubroInfo.canonical && !slots.supplierCode) {
       const branchNotice =
         branchInfo.target === "CENTRO" ? " para *Centro*" :
         branchInfo.target === "JARDIN" ? " para *Jardín*" : "";
@@ -617,39 +804,26 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
           wantsExcel: true,
           needsClarification: true,
           clarificationType: "RUBRO",
-          clarificationMessage: `¿De qué rubro querés generar el Excel de reposición${branchNotice}? Podés elegir por ejemplo: *Chocolates*, *Caramelos*, *Galletitas*, *Bebidas*, *Almacén*, *Cigarrillos*, *Copetín*, *Limpieza*, *Perfumería*, *Pilas*, entre otros.`,
+          clarificationMessage: `Para generar el Excel de reposición${branchNotice}, podés indicarme el rubro (ej. *Chocolates*, *Galletitas*, *Bebidas*, *Cigarrillos*) o el proveedor (ej. *Arcor*, *Baggio*, *50350*).`,
           pendingIntentType: "REPLENISHMENT_EXCEL",
         },
         confidence: 0.95,
       };
     }
 
-    // 3. Rubro is known, check branch
-    const invalidBranch = extractInvalidBranch(text);
-    if (invalidBranch) {
-      const formattedRubro = formatRubroLabel(rubroInfo.canonical);
-      return {
-        type: "REPLENISHMENT_EXCEL",
-        rawText: text,
-        slots: {
-          ...slots,
-          targetRubro: rubroInfo.canonical,
-          wantsExcel: true,
-          needsClarification: true,
-          clarificationType: "BRANCH",
-          clarificationMessage: `No reconozco la sucursal *${invalidBranch}*. Las sucursales disponibles son *Centro* o *Jardín* (abastecidas por el *Depósito Central*). ¿Para cuál querés generar el Excel de *${formattedRubro}*?`,
-          pendingIntentType: "REPLENISHMENT_EXCEL",
-        },
-        confidence: 0.95,
-      };
-    }
-
+    // 7. If branch is missing or DEPOSITO: ask clarification for branch
     if (branchInfo.target === "ALL" || branchInfo.target === "DEPOSITO") {
-      const formattedRubro = formatRubroLabel(rubroInfo.canonical);
+      const targetDesc =
+        slots.supplierName && rubroInfo.canonical
+          ? `de *${formatRubroLabel(rubroInfo.canonical)}* del proveedor *${slots.supplierName}*`
+          : slots.supplierName
+          ? `del proveedor *${slots.supplierName}*`
+          : `de *${formatRubroLabel(rubroInfo.canonical!)}*`;
+
       const msg =
         branchInfo.target === "DEPOSITO"
-          ? `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál querés generar el Excel de *${formattedRubro}*?`
-          : `Para generar el Excel de reposición de *${formattedRubro}*, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`;
+          ? `La reposición semanal se calcula para las sucursales de venta (*Centro* o *Jardín*) que se abastecen desde el Depósito Central. ¿Para cuál querés generar el Excel ${targetDesc}?`
+          : `Para generar el Excel de reposición ${targetDesc}, por favor indicame si lo necesitás para *Centro*, *Jardín* o *Depósito*.`;
 
       return {
         type: "REPLENISHMENT_EXCEL",
@@ -667,7 +841,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
       };
     }
 
-    // 4. Branch and rubro are both valid
+    // 8. Branch and target (rubro and/or supplier) are both valid
     return {
       type: "REPLENISHMENT_EXCEL",
       rawText: text,
@@ -685,18 +859,64 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
 
   // 9. REPOSICIÓN SEMANAL (en texto plano)
   if (
-    /\b(reposicion semanal|que productos hay que reponer|que hay que reponer|que tengo que reponer|necesitan reposicion|sugerencias de reposicion|sugerencia|a reponer|reponer|reposicion)\b/.test(clean)
+    /\b(reposicion semanal|que productos hay que reponer|que hay que reponer|que tengo que reponer|necesitan reposicion|sugerencias de reposicion|sugerencia|a reponer|reponer|reposicion|que tengo que pedir|que tengo que pedirle|que falta reponer|lo que falta reponer|que pedir|que pedirle|falta pedir|falta pedirle|faltan pedir|faltan pedirle|lo de)\b/.test(clean) ||
+    (mentionsReplenish && (hasSupplierCandidate || Boolean(rubroInfo.canonical)))
   ) {
     if (rubroInfo.canonical) {
       slots.targetRubro = rubroInfo.canonical;
     }
+
+    // If generic supplier reference (e.g. "Qué productos tengo que pedirle a este proveedor")
+    if (supplierInfo.isGenericSupplierReference && !resolvedSupplier) {
+      return {
+        type: "REPLENISHMENT",
+        rawText: text,
+        slots: {
+          ...slots,
+          needsClarification: true,
+          clarificationType: "SUPPLIER",
+          clarificationMessage:
+            "¿De qué proveedor querés consultar la reposición? Podés indicarme el nombre (ej. *Arcor*, *Baggio*, *Coca-Cola*) o el código numérico (ej. *50350*).",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // If ambiguous supplier
+    if (resolvedSupplier && resolvedSupplier.status === "AMBIGUOUS") {
+      const optionsList = resolvedSupplier.candidates
+        .map((c, i) => `*${i + 1}. ${c.name}* (cód. ${c.code})`)
+        .join(", ");
+      return {
+        type: "REPLENISHMENT",
+        rawText: text,
+        slots: {
+          ...slots,
+          needsClarification: true,
+          clarificationType: "SUPPLIER",
+          clarificationMessage: `Encontré varios proveedores posibles para *${supplierInfo.candidate}*: ${optionsList}. ¿Cuál querés consultar?`,
+          disambiguationCandidates: resolvedSupplier.candidates.map((c) => ({ code: c.code, label: c.name })),
+        },
+        confidence: 0.95,
+      };
+    }
+
     // If no branch was specified or user asked for Depósito, request clarification for Centro or Jardín
     if (branchInfo.target === "ALL" || branchInfo.target === "DEPOSITO") {
-      const rubroSuffix = rubroInfo.canonical ? ` de *${formatRubroLabel(rubroInfo.canonical)}*` : "";
+      const targetDesc =
+        slots.supplierName && rubroInfo.canonical
+          ? ` de *${formatRubroLabel(rubroInfo.canonical)}* del proveedor *${slots.supplierName}*`
+          : slots.supplierName
+          ? ` del proveedor *${slots.supplierName}*`
+          : rubroInfo.canonical
+          ? ` de *${formatRubroLabel(rubroInfo.canonical)}*`
+          : "";
+
       const msg =
         branchInfo.target === "DEPOSITO"
-          ? `La reposición semanal se calcula para abastecer a las sucursales *Centro* o *Jardín* desde el Depósito Central. ¿Cuál querés consultar${rubroSuffix}?`
-          : `Para consultar la reposición semanal sugerida${rubroSuffix}, por favor indicame para qué sucursal querés verla: *Centro* o *Jardín*.`;
+          ? `La reposición semanal se calcula para abastecer a las sucursales *Centro* o *Jardín* desde el Depósito Central. ¿Cuál querés consultar${targetDesc}?`
+          : `Para consultar la reposición semanal sugerida${targetDesc}, por favor indicame para qué sucursal querés verla: *Centro* o *Jardín*.`;
+
       return {
         type: "REPLENISHMENT",
         rawText: text,
@@ -709,6 +929,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
         confidence: 0.95,
       };
     }
+
     return { type: "REPLENISHMENT", rawText: text, slots, confidence: 0.95 };
   }
 
