@@ -180,13 +180,24 @@ export function resolveBranchStockHeader(branchLabel?: string): string {
   return "Stock Central";
 }
 
+export type NegativeStockExportItem = {
+  article_id: number;
+  description: string | null;
+  current_stock: number;
+  rubro?: string | null;
+  supplier_code?: string | null;
+  stock_depot?: number | null;
+  weekly_demand?: number | null;
+};
+
 export function buildReplenishmentWorkbook(params: {
   items: ReplenishmentExportItem[];
   branchLabel: string;
   planningDate: string;
   title?: string;
+  negativeStockItems?: NegativeStockExportItem[];
 }): xlsx.WorkBook {
-  const { items, branchLabel, planningDate, title = "Reposición Semanal" } = params;
+  const { items, branchLabel, planningDate, title = "Reposición Semanal", negativeStockItems } = params;
 
   // Filtrar exclusivamente los productos que cumplen la regla:
   // incluirEnExcel = seleccionado && cantidadSolicitada > 0
@@ -302,6 +313,63 @@ export function buildReplenishmentWorkbook(params: {
 
   const wb = xlsx.utils.book_new();
   xlsx.utils.book_append_sheet(wb, ws, "Reposición");
+
+  // Second Sheet: Revisión Manual (Stock Negativo) si existen productos excluidos
+  if (negativeStockItems && negativeStockItems.length > 0) {
+    const negAoa: any[][] = [];
+    negAoa.push([`LA CASA DEL KIOSKERO - REVISIÓN MANUAL (STOCK NEGATIVO)`]);
+    negAoa.push([
+      `Punto de Venta: ${branchLabel}`,
+      `Planificación: ${planningDate}`,
+      `Total a auditar: ${negativeStockItems.length} artículos`,
+      `Generado: ${new Date().toLocaleDateString("es-AR")}`,
+    ]);
+    negAoa.push([
+      "NOTA: Artículos con saldo negativo en sucursal excluidos del cálculo automático. Requieren control de stock físico antes de pedir.",
+    ]);
+    negAoa.push([]);
+
+    negAoa.push([
+      "Código",
+      "Descripción",
+      "Rubro",
+      "Proveedor",
+      branchStockHeader,
+      "Stock Depósito",
+      "Demanda Semanal",
+      "Cantidad Sugerida",
+      "Motivo de Exclusión",
+    ]);
+
+    for (const item of negativeStockItems) {
+      negAoa.push([
+        item.article_id,
+        item.description || `Artículo ${item.article_id}`,
+        item.rubro || "-",
+        item.supplier_code || "-",
+        item.current_stock,
+        item.stock_depot !== null && item.stock_depot !== undefined ? item.stock_depot : "-",
+        item.weekly_demand !== null && item.weekly_demand !== undefined ? item.weekly_demand : "-",
+        "Excluido",
+        `Saldo negativo en sucursal (${item.current_stock} u.) - Requiere auditoría física`,
+      ]);
+    }
+
+    const wsNeg = xlsx.utils.aoa_to_sheet(negAoa);
+    wsNeg["!cols"] = [
+      { wch: 10 },
+      { wch: 42 },
+      { wch: 22 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 40 },
+    ];
+    xlsx.utils.book_append_sheet(wb, wsNeg, "Revisión Manual");
+  }
+
   return wb;
 }
 
@@ -310,6 +378,7 @@ export function generateReplenishmentExcelBuffer(params: {
   branchLabel: string;
   planningDate: string;
   title?: string;
+  negativeStockItems?: NegativeStockExportItem[];
 }): Buffer {
   const wb = buildReplenishmentWorkbook(params);
   return xlsx.write(wb, { type: "buffer", bookType: "xlsx" });

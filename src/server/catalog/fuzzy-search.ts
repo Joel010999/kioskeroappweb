@@ -47,7 +47,21 @@ const CANONICAL_PRODUCT_ALIASES: Array<{
   },
   {
     canonical: "marlboro",
-    aliases: ["marlboro", "malboro", "marboro", "marlboro box", "marvolo"],
+    aliases: ["marlboro", "malboro", "marboro", "marlboro box", "marvolo", "marlb", "marlb."],
+  },
+  {
+    canonical: "marlboro crafted red",
+    aliases: [
+      "marlboro crafted red",
+      "marlb crafted red",
+      "crafted red",
+      "marlb crafted red ks",
+      "marlboro crafted red ks",
+      "marlb crafted red box",
+      "marlboro crafted red box",
+      "marlb. crafted red ks.",
+      "marlb. crafted red box",
+    ],
   },
   {
     canonical: "philip morris",
@@ -157,6 +171,32 @@ export function canonicalizeCommercialBrand(term: string): string {
   const resolved = resolveKnownAlias(norm);
   if (resolved) return resolved;
   return norm;
+}
+
+const CATALOG_ABBREVIATIONS: Record<string, string[]> = {
+  marlb: ["marlboro", "marlb"],
+  marlboro: ["marlboro", "marlb"],
+  chest: ["chesterfield", "chest"],
+  chesterfield: ["chesterfield", "chest"],
+  philip: ["philip morris", "philip"],
+  bagg: ["baggio", "bagg"],
+  baggio: ["baggio", "bagg"],
+  coca: ["coca cola", "coca", "cocacola"],
+  "coca-cola": ["coca cola", "coca", "cocacola"],
+  cocacola: ["coca cola", "coca", "cocacola"],
+  red: ["red"],
+  crafted: ["crafted"],
+  point: ["point"],
+  master: ["master"],
+};
+
+export function expandSearchToken(token: string): string[] {
+  const clean = normalizeFuzzyText(token);
+  if (!clean) return [];
+  if (CATALOG_ABBREVIATIONS[clean]) {
+    return CATALOG_ABBREVIATIONS[clean];
+  }
+  return [clean];
 }
 
 /**

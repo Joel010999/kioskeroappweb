@@ -5,11 +5,14 @@ import type { ParsedIntent } from "./types";
 import {
   clearPendingClarification,
   resolvePendingClarification,
+  resolveContextualCorrection,
   setPendingClarification,
+  setLastFulfilledContext,
 } from "./context";
 import {
   formatAmbiguousPendingMessage,
   formatClarificationMessage,
+  formatDepositAvailabilityResponse,
   formatGreetingMessage,
   formatHelpMessage,
   formatLowStockResponse,
@@ -32,6 +35,7 @@ import {
   formatUnknownMessage,
 } from "./formatters";
 import {
+  queryDepositAvailability,
   queryLowStock,
   queryOrderDetail,
   queryPendingOrders,
@@ -128,8 +132,10 @@ export async function processIncomingMessage(
     await markMessageProcessed(messageId, "RE_PROMPT");
     return { processed: true, intent: "RE_PROMPT", replyText };
   } else {
-    // Brand-new intent
-    intent = parseUserMessage(textBody);
+    // Brand-new intent or contextual continuation
+    const baseIntent = parseUserMessage(textBody);
+    const contextualIntent = resolveContextualCorrection(senderPhone, textBody, baseIntent);
+    intent = contextualIntent || baseIntent;
   }
 
   console.log(`[WHATSAPP PROCESSOR] Intent resolved: ${intent.type} for id=${messageId}`);
@@ -172,7 +178,7 @@ export async function processIncomingMessage(
           intent.slots.branchTarget,
           intent.slots.branchId
         );
-        replyText = formatStockResponse(stockData, intent.slots.branchTarget);
+        replyText = formatStockResponse(stockData, intent.slots.branchTarget, intent.slots.productSearch);
         break;
       }
 
@@ -180,9 +186,22 @@ export async function processIncomingMessage(
         const lowStockData = await queryLowStock(
           intent.slots.branchTarget,
           intent.slots.branchId,
-          10
+          10,
+          intent.slots.targetRubro,
+          intent.slots.supplierCode
         );
         replyText = formatLowStockResponse(lowStockData);
+        break;
+      }
+
+      case "DEPOSIT_AVAILABILITY": {
+        const branchId = intent.slots.branchId || (intent.slots.branchTarget === "JARDIN" ? 3 : 2);
+        const depData = await queryDepositAvailability(
+          branchId,
+          intent.slots.targetRubro,
+          10
+        );
+        replyText = formatDepositAvailabilityResponse(depData);
         break;
       }
 
@@ -260,9 +279,9 @@ export async function processIncomingMessage(
             negativeStockProducts: excelData.negativeStockProducts,
           });
         } else {
-          const cleanRubro = excelData.rubro ? excelData.rubro.replace(/\s+/g, "_").toUpperCase() : "";
-          const cleanSupplier = (excelData.supplierName || (excelData.supplierCode ? `PROV_${excelData.supplierCode}` : "")).replace(/\s+/g, "_").toUpperCase();
-          const cleanBranch = excelData.branchName.replace(/\s+/g, "_").toUpperCase();
+          const cleanRubro = excelData.rubro ? excelData.rubro.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_").toUpperCase() : "";
+          const cleanSupplier = (excelData.supplierName || (excelData.supplierCode ? `PROV_${excelData.supplierCode}` : "")).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_").toUpperCase();
+          const cleanBranch = excelData.branchName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_").toUpperCase();
           const cleanTarget = cleanRubro && cleanSupplier ? `${cleanRubro}_${cleanSupplier}` : cleanSupplier || cleanRubro || "GENERAL";
           const fileName = `REPOSICION_${cleanTarget}_${cleanBranch}_${excelData.planningDate}.xlsx`;
           const caption = formatReplenishmentExcelCaption({
@@ -293,6 +312,18 @@ export async function processIncomingMessage(
 
           console.log(`[WHATSAPP PROCESSOR] Excel document dispatch result: success=true`);
           await markMessageProcessed(messageId, intent.type);
+
+          setLastFulfilledContext(senderPhone, {
+            intentType: intent.type,
+            slots: {
+              ...intent.slots,
+              targetRubro: excelData.rubro,
+              supplierCode: excelData.supplierCode,
+              supplierName: excelData.supplierName,
+              branchId: excelData.branchId,
+              branchTarget: excelData.branchId === 2 ? "CENTRO" : "JARDIN",
+            },
+          });
 
           return {
             processed: true,
@@ -389,7 +420,19 @@ export async function processIncomingMessage(
         break;
     }
 
-    // 6. Send WhatsApp reply
+    // 6. Record fulfilled context for follow-up questions/corrections
+    if (
+      intent.type !== "UNKNOWN" &&
+      intent.type !== "HELP" &&
+      intent.type !== "GREETING"
+    ) {
+      setLastFulfilledContext(senderPhone, {
+        intentType: intent.type,
+        slots: intent.slots,
+      });
+    }
+
+    // 7. Send WhatsApp reply
     console.log(`[WHATSAPP PROCESSOR] Attempting to send reply for intent=${intent.type} to ${maskPhone(replyTarget)}`);
     const sendResult = await sendFn(replyTarget, replyText);
     console.log(`[WHATSAPP PROCESSOR] Reply dispatch result: success=${Boolean(sendResult?.success)}`);

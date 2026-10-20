@@ -170,19 +170,51 @@ export function resolvePeriodFromText(
 }
 
 /**
- * Extracts branch target from text.
+ * Extracts branch target from text, respecting explicit negations (e.g. "no el de Centro")
+ * and tolerant to common typos (e.g. "cetro", "jardi", "depo").
  */
 export function extractBranch(text: string): { target: BranchTarget; branchId?: number } {
   const clean = cleanText(text);
 
-  if (/\b(deposito central|almacen central|deposito|depo|central)\b/.test(clean)) {
-    return { target: "DEPOSITO", branchId: 1 };
+  // 1. Check for explicit branch negation: e.g. "no el de centro", "no centro", "en vez de centro", "no el de jardin"
+  const negatedBranches = new Set<string>();
+  const negationMatches = clean.matchAll(
+    /\b(?:no(?:\s+(?:el\s+de|la\s+de|de|en|para))?|en\s+vez\s+de)\s+(centro|cetro|cnetro|jardin|jardi|deposito|depo|central)\b/gi
+  );
+  for (const m of negationMatches) {
+    const rawNeg = m[1].toLowerCase();
+    if (/^(centro|cetro|cnetro)$/.test(rawNeg)) negatedBranches.add("CENTRO");
+    if (/^(jardin|jardi)$/.test(rawNeg)) negatedBranches.add("JARDIN");
+    if (/^(deposito|depo|central)$/.test(rawNeg)) negatedBranches.add("DEPOSITO");
   }
-  if (/\b(centro|sucursal centro|local centro|pv1)\b/.test(clean)) {
+
+  // Remove negated phrases from consideration for positive target match
+  const positiveText = clean.replace(
+    /\b(?:no(?:\s+(?:el\s+de|la\s+de|de|en|para))?|en\s+vez\s+de)\s+(centro|cetro|cnetro|jardin|jardi|deposito|depo|central)\b/gi,
+    " "
+  );
+
+  // 2. Check for positive matches (including common typos)
+  const hasCentro =
+    !negatedBranches.has("CENTRO") &&
+    /\b(centro|sucursal centro|local centro|pv1|cetro|cnetro|centr|centroo|cemtro)\b/.test(positiveText);
+  const hasJardin =
+    !negatedBranches.has("JARDIN") &&
+    /\b(jardin|sucursal jardin|local jardin|pv2|jardi|jardim|jradin|jadring|jardn)\b/.test(positiveText);
+  const hasDeposito =
+    !negatedBranches.has("DEPOSITO") &&
+    /\b(deposito central|almacen central|deposito|depo|desposito|depsito|central)\b/.test(positiveText);
+
+  // If a retail branch (Centro or Jardín) is mentioned, prioritize it over Depósito
+  // (e.g. "faltan en Centro pero hay en el depósito" -> Centro is the target branch to replenish)
+  if (hasCentro && !hasJardin) {
     return { target: "CENTRO", branchId: 2 };
   }
-  if (/\b(jardin|sucursal jardin|local jardin|pv2)\b/.test(clean)) {
+  if (hasJardin && !hasCentro) {
     return { target: "JARDIN", branchId: 3 };
+  }
+  if (hasDeposito && !hasCentro && !hasJardin) {
+    return { target: "DEPOSITO", branchId: 1 };
   }
 
   return { target: "ALL" };
@@ -197,7 +229,9 @@ export function extractInvalidBranch(text: string): string | undefined {
     const rawCandidate = match[1].trim();
     const candidateClean = cleanText(rawCandidate);
     const validTokens = new Set([
-      "centro", "jardin", "deposito", "depo", "central",
+      "centro", "cetro", "cnetro", "centr", "centroo", "cemtro",
+      "jardin", "jardi", "jardim", "jradin", "jadring", "jardn",
+      "deposito", "depo", "desposito", "depsito", "central",
       "el", "la", "los", "las", "un", "una", "mi", "este", "esta",
       "excel", "planilla", "archivo", "reposicion", "reponer", "stock",
       "chocolates", "caramelos", "galletitas", "bebidas", "almacen",
@@ -412,19 +446,19 @@ export function extractProductSearch(
 
   // Remove common question prefixes
   const prefixes = [
-    /^cuanto stock (?:hay|tenemos|queda|de|del)?\s*/,
-    /^stock (?:de|del|hay|en)?\s*/,
-    /^tenes (?:stock de|stock del|stock)?\s*/,
-    /^queda (?:stock de|stock del|stock)?\s*/,
-    /^hay (?:stock de|stock del|stock)?\s*/,
-    /^buscar producto\s*/,
-    /^buscar\s*/,
-    /^precio de\s*/,
-    /^proveedor de\s*/,
-    /^de que proveedor es\s*/,
-    /^que proveedor tiene\s*/,
-    /^este producto\s*/,
-    /^este articulo\s*/,
+    /^(?:busca(?:me)?(?:\s+(?:el|la|los|las|un|una|el\s+articulo|el\s+producto|articulo|producto))?)\s+/i,
+    /^(?:buscar(?:\s+(?:el|la|los|las|un|una|el\s+articulo|el\s+producto|articulo|producto))?)\s+/i,
+    /^(?:consultar?|fijate|ver|mostra(?:me)?|dame)\s+(?:el\s+stock\s+(?:de|del)?|stock\s+(?:de|del)?|el\s+articulo|articulo)?\s*/i,
+    /^(?:cuanto\s+stock\s+(?:hay|tenemos|queda|de|del)?)\s*/i,
+    /^(?:stock\s+(?:de|del|hay|en)?)\s*/i,
+    /^(?:tenes\s+(?:stock\s+de|stock\s+del|stock)?)\s*/i,
+    /^(?:queda\s+(?:stock\s+de|stock\s+del|stock)?)\s*/i,
+    /^(?:hay\s+(?:stock\s+de|stock\s+del|stock)?)\s*/i,
+    /^(?:precio\s+de)\s*/i,
+    /^(?:proveedor\s+de)\s*/i,
+    /^(?:de\s+que\s+proveedor\s+es)\s*/i,
+    /^(?:que\s+proveedor\s+tiene)\s*/i,
+    /^(?:este\s+producto|este\s+articulo)\s*/i,
   ];
 
   for (const prefix of prefixes) {
@@ -432,9 +466,9 @@ export function extractProductSearch(
   }
 
   // Remove branch mentions: "en centro", "en jardin", "en deposito"
-  cleaned = cleaned.replace(/\b(?:en|para|del?)\s+(?:centro|jardin|deposito|el deposito)\b/g, " ");
+  cleaned = cleaned.replace(/\b(?:en|para|del?)\s+(?:centro|jardin|deposito|el deposito|cetro|jardi)\b/g, " ");
 
-  // Remove common filler verbs
+  // Remove common filler verbs and particles
   cleaned = cleaned.replace(/\b(?:hay|queda|quedan|tenemos|este|articulo|producto)\b/g, " ");
 
   // Remove user-specified stopwords
@@ -442,7 +476,25 @@ export function extractProductSearch(
     cleaned = cleaned.replace(new RegExp(`\\b${cleanText(stop)}\\b`, "g"), " ");
   }
 
-  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  // Strip leading articles
+  cleaned = cleaned.replace(/^(?:el|la|los|las|un|una|del|de)\s+/i, "");
+
+  // Normalize punctuation and hyphens to spaces
+  cleaned = cleaned.replace(/[-_/]/g, " ").replace(/\s+/g, " ").trim();
+
+  // If bare number, treat as article ID
+  if (/^\d+$/.test(cleaned)) {
+    return { articleId: Number(cleaned) };
+  }
+
+  // Guard against conversational questions being extracted as bare product searches
+  if (
+    /\b(que|como|cuando|donde|por que|porque|cual|cuales|cuanto|cuanta|cuantos|cuantas|quien|quienes|falta|faltan|reponer|pedir)\b/i.test(
+      cleaned
+    )
+  ) {
+    return {};
+  }
 
   // Guard against non-product system/command keywords being treated as product searches
   const blacklistedKeywords = new Set([
@@ -857,11 +909,54 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     };
   }
 
+  // 8.8. DISPONIBILIDAD EN DEPÓSITO DE PRODUCTOS FALTANTES EN SUCURSAL
+  const mentionsDepot = /\b(deposito|almacen central|depo)\b/.test(clean);
+  const mentionsBranchFaltante =
+    /\b(falta|faltan|hace falta|hacen falta|faltantes|quiebre|quiebres|estan faltando)\b/.test(clean);
+  const mentionsDepotAvailable =
+    /\b(hay en (?:el )?deposito|tengo en (?:el )?deposito|tenemos en (?:el )?deposito|disponible|disponibles|quedan en (?:el )?deposito|pero hay en (?:el )?deposito|y hay en (?:el )?deposito|que hay en (?:el )?deposito)\b/.test(clean) ||
+    /\b(productos (?:que )?faltan en \w+ pero hay en (?:el )?deposito|productos tengo en el deposito y faltan en \w+)\b/.test(clean);
+
+  if (mentionsDepot && mentionsBranchFaltante && mentionsDepotAvailable) {
+    if (rubroInfo.canonical) {
+      slots.targetRubro = rubroInfo.canonical;
+    }
+
+    if (branchInfo.target === "ALL" || branchInfo.target === "DEPOSITO") {
+      return {
+        type: "DEPOSIT_AVAILABILITY",
+        rawText: text,
+        slots: {
+          ...slots,
+          needsClarification: true,
+          clarificationType: "BRANCH",
+          clarificationMessage:
+            "¿Para qué sucursal querés consultar los productos disponibles en depósito que faltan en el local? Podés indicar *Centro* o *Jardín*.",
+          pendingIntentType: "DEPOSIT_AVAILABILITY",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    return {
+      type: "DEPOSIT_AVAILABILITY",
+      rawText: text,
+      slots: {
+        ...slots,
+        branchTarget: branchInfo.target,
+        branchId: branchInfo.branchId,
+      },
+      confidence: 0.95,
+    };
+  }
+
   // 9. REPOSICIÓN SEMANAL (en texto plano)
-  if (
+  const isReplenishmentText =
     /\b(reposicion semanal|que productos hay que reponer|que hay que reponer|que tengo que reponer|necesitan reposicion|sugerencias de reposicion|sugerencia|a reponer|reponer|reposicion|que tengo que pedir|que tengo que pedirle|que falta reponer|lo que falta reponer|que pedir|que pedirle|falta pedir|falta pedirle|faltan pedir|faltan pedirle|lo de)\b/.test(clean) ||
-    (mentionsReplenish && (hasSupplierCandidate || Boolean(rubroInfo.canonical)))
-  ) {
+    /\b(me estan haciendo falta|haciendo falta|estan haciendo falta|hace falta|estan faltando|me estan faltando|nos esta faltando|que esta faltando|que productos estan faltando|que me esta faltando|que me falta|que nos falta|que falta|que faltan|productos que faltan|articulos que faltan|que productos me faltan|que productos necesito reponer|que articulos necesito reponer)\b/.test(clean) ||
+    (mentionsReplenish && (hasSupplierCandidate || Boolean(rubroInfo.canonical)));
+
+  if (isReplenishmentText) {
     if (rubroInfo.canonical) {
       slots.targetRubro = rubroInfo.canonical;
     }
@@ -935,18 +1030,24 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
 
   // 10. STOCK BAJO / MENOR STOCK (Problem 1)
   if (
-    /\b(stock bajo|bajo stock|poco stock|stock critico|critico de stock|menor stock|productos con bajo stock|productos tienen stock bajo|tienen stock bajo|escaso stock|stock escaso|productos con menor stock|articulos con stock bajo)\b/.test(clean)
+    /\b(stock bajo|bajo stock|bajos de stock|mas bajos de stock|estan bajos de stock|estan mas bajos de stock|poco stock|stock critico|critico de stock|menor stock|productos con bajo stock|productos tienen stock bajo|tienen stock bajo|escaso stock|stock escaso|productos con menor stock|articulos con stock bajo)\b/.test(clean)
   ) {
+    if (rubroInfo.canonical) {
+      slots.targetRubro = rubroInfo.canonical;
+    }
+
     if (branchInfo.target === "ALL") {
+      const rubroNotice = rubroInfo.canonical ? ` de *${formatRubroLabel(rubroInfo.canonical)}*` : "";
       return {
         type: "STOCK_LOW",
         rawText: text,
         slots: {
           ...slots,
+          targetRubro: rubroInfo.canonical,
           needsClarification: true,
           clarificationType: "BRANCH",
           clarificationMessage:
-            "¿Para qué sucursal querés consultar los productos con stock bajo? Podés indicar *Depósito Central*, *Centro* o *Jardín*.",
+            `¿Para qué sucursal querés consultar los productos con stock bajo${rubroNotice}? Podés indicar *Depósito Central*, *Centro* o *Jardín*.`,
         },
         confidence: 0.95,
       };
@@ -1024,7 +1125,7 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
 
   // 18. CONSULTA DIRECTA DE STOCK POR PRODUCTO O CÓDIGO
   if (
-    /\b(stock|cuanto hay|cuanto stock|tenes|queda|quedan|hay stock|busca|buscar)\b/.test(clean) ||
+    /\b(stock|cuanto hay|cuanto stock|tenes|queda|quedan|hay stock|busca|buscá|buscar|buscame)\b/.test(clean) ||
     /\b(articulo|art|codigo)\s*\d+/.test(clean)
   ) {
     const productExtraction = extractProductSearch(text);
@@ -1051,8 +1152,16 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
   }
 
   // 19. SI EL USUARIO ESCRIBIÓ SOLO UN NOMBRE O CÓDIGO (Búsqueda implícita de stock)
+  // Guard: if it's a conversational sentence (e.g. contains question words or conversational verbs), DO NOT treat as bare product name
+  const isConversationalQuestion = /\b(que|como|cuando|donde|por que|porque|cual|cuales|cuanto|cuanta|cuantos|cuantas|quien|quienes|de que|en que)\b/i.test(clean);
   const implicitExtraction = extractProductSearch(text);
-  if (implicitExtraction.articleId || (implicitExtraction.productSearch && implicitExtraction.productSearch.length >= 3)) {
+  if (
+    implicitExtraction.articleId ||
+    (!isConversationalQuestion &&
+      implicitExtraction.productSearch &&
+      implicitExtraction.productSearch.length >= 3 &&
+      implicitExtraction.productSearch.split(/\s+/).length <= 4)
+  ) {
     return {
       type: "STOCK_PRODUCT",
       rawText: text,

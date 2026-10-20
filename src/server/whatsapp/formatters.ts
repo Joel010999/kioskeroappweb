@@ -33,13 +33,31 @@ function statusToEmoji(status: string): string {
 }
 
 /**
+ * Formats numeric stock quantities cleanly (avoids fractional digits when near-integer).
+ */
+export function formatStockQty(qty: number): string {
+  if (Number.isInteger(qty) || Math.abs(qty - Math.round(qty)) < 0.001) {
+    return Math.round(qty).toLocaleString("es-AR");
+  }
+  return Number(qty.toFixed(2)).toLocaleString("es-AR");
+}
+
+/**
  * Formats stock query results across locations.
  */
 export function formatStockResponse(
   data: { items: ProductStockItem[]; totalFound: number },
-  branchTarget: BranchTarget
+  branchTarget: BranchTarget,
+  searchQuery?: string
 ): string {
   if (data.items.length === 0) {
+    if (searchQuery) {
+      return (
+        "🔍 *Consulta de Stock*\n\n" +
+        `No se encontró el producto *"${searchQuery}"* en el catálogo.\n` +
+        "_Tip: Probá buscar por código numérico (ej. 'art 9043'), una sola palabra clave o por marca._"
+      );
+    }
     return (
       "🔍 *Consulta de Stock*\n\n" +
       "No se encontraron productos con ese criterio de búsqueda.\n" +
@@ -58,16 +76,16 @@ export function formatStockResponse(
     const stockParts: string[] = [];
 
     if (branchTarget === "ALL" || branchTarget === "CENTRO") {
-      const centroText = item.stockCentro !== null ? `${item.stockCentro} u.` : "Sin datos";
+      const centroText = item.stockCentro !== null ? `${formatStockQty(item.stockCentro)} u.` : "Sin datos";
       stockParts.push(`• *Centro:* ${centroText}`);
     }
     if (branchTarget === "ALL" || branchTarget === "JARDIN") {
-      const jardinText = item.stockJardin !== null ? `${item.stockJardin} u.` : "Sin datos";
+      const jardinText = item.stockJardin !== null ? `${formatStockQty(item.stockJardin)} u.` : "Sin datos";
       stockParts.push(`• *Jardín:* ${jardinText}`);
     }
     if (branchTarget === "ALL" || branchTarget === "DEPOSITO") {
       const snapDate = item.depotSnapshotDate ? ` (Excel ${formatDate(item.depotSnapshotDate)})` : "";
-      const depotText = item.stockDepot !== null ? `${item.stockDepot} u.${snapDate}` : "Sin datos";
+      const depotText = item.stockDepot !== null ? `${formatStockQty(item.stockDepot)} u.${snapDate}` : "Sin datos";
       stockParts.push(`• *Depósito:* ${depotText}`);
     }
 
@@ -77,6 +95,8 @@ export function formatStockResponse(
 
   if (data.totalFound > data.items.length) {
     lines.push(`_Mostrando los primeros ${data.items.length} de ${data.totalFound} productos encontrados._`);
+  } else if (data.items.length > 1 && data.items.length <= 5) {
+    lines.push(`_Tip: Podés consultar el código exacto de una presentación (ej. 'art ${data.items[0].articleId}')._`);
   }
 
   return lines.join("\n").trim();
@@ -108,7 +128,7 @@ export function formatStockAlertsResponse(data: {
   if (data.negativeItems.length > 0) {
     lines.push("*Artículos con saldo negativo:*");
     for (const item of data.negativeItems) {
-      lines.push(`• ${item.description}: *${item.saldo} u.* (Art. \`${item.articleId}\`)`);
+      lines.push(`• ${item.description}: *${formatStockQty(item.saldo)} u.* (Art. \`${item.articleId}\`)`);
     }
     lines.push("");
   }
@@ -160,14 +180,18 @@ export function formatReplenishmentResponse(data: {
   ];
 
   for (const item of data.items) {
-    const depotInfo = item.stockDepot !== null ? ` | Depo: ${item.stockDepot} u.` : "";
+    const depotInfo = item.stockDepot !== null ? ` | Depo: ${formatStockQty(item.stockDepot)} u.` : "";
     lines.push(
       `• *${item.description}* (Art. \`${item.articleId}\`)\n` +
-      `  *Pedir: ${item.suggestedQuantity} u.* (Stock actual: ${item.stockCurrent} u.${depotInfo})`
+      `  *Pedir: ${formatStockQty(item.suggestedQuantity)} u.* (Stock actual: ${formatStockQty(item.stockCurrent)} u.${depotInfo})`
     );
   }
 
   lines.push("");
+  if (data.totalSuggested > data.items.length) {
+    lines.push(`_Mostrando las primeras ${data.items.length} de ${data.totalSuggested} sugerencias._`);
+    lines.push(`💡 _Para ver la lista completa con fórmulas de reposición, podés pedir: «Excel de reposición para ${data.branchName}»._\n`);
+  }
   lines.push("_Cálculo basado en demanda de las últimas 6 semanas y estacionalidad YoY._");
   return lines.join("\n").trim();
 }
@@ -443,10 +467,14 @@ export function formatSystemHealthResponse(health: {
 /**
  * Formats low stock query response.
  */
+/**
+ * Formats low stock query response.
+ */
 export function formatLowStockResponse(data: {
   branchName: string;
   branchId: number;
   total: number;
+  rubro?: string;
   items: Array<{
     articleId: number;
     description: string;
@@ -454,21 +482,23 @@ export function formatLowStockResponse(data: {
     stockStatus: "OUT_OF_STOCK" | "AVAILABLE";
   }>;
 }): string {
+  const rubroHeader = data.rubro ? ` (${formatRubroLabel(data.rubro)})` : "";
   if (data.items.length === 0) {
+    const rubroSuffix = data.rubro ? ` para el rubro *${formatRubroLabel(data.rubro)}*` : "";
     return (
-      `📉 *Productos con menor stock — ${data.branchName}*\n\n` +
-      `No se registraron productos con stock bajo o sin existencias para esta sucursal.`
+      `📉 *Productos con menor stock — ${data.branchName}${rubroHeader}*\n\n` +
+      `No se registraron productos con stock bajo o sin existencias${rubroSuffix} para esta sucursal.`
     );
   }
 
   const lines: string[] = [
-    `📉 *Productos con menor stock — ${data.branchName}*\n`,
+    `📉 *Productos con menor stock — ${data.branchName}${rubroHeader}*\n`,
   ];
 
   for (const item of data.items) {
-    let saldoText = `${item.saldo} u.`;
+    let saldoText = `${formatStockQty(item.saldo)} u.`;
     if (item.saldo < 0) {
-      saldoText = `${item.saldo} u. ⚠️ (Saldo negativo, revisar)`;
+      saldoText = `${formatStockQty(item.saldo)} u. ⚠️ (Saldo negativo, revisar)`;
     } else if (item.saldo === 0) {
       saldoText = `0 u. ⚠️ (Sin stock)`;
     }
@@ -479,6 +509,52 @@ export function formatLowStockResponse(data: {
     lines.push(`\n_Mostrando los primeros ${data.items.length} de ${data.total} productos registrados con menor stock._`);
   }
 
+  return lines.join("\n").trim();
+}
+
+/**
+ * Formats deposit availability response (items in Depósito Central missing in a retail branch).
+ */
+export function formatDepositAvailabilityResponse(data: {
+  branchName: string;
+  branchId: number;
+  rubro?: string;
+  total: number;
+  items: Array<{
+    articleId: number;
+    description: string;
+    branchStock: number;
+    depotStock: number;
+    rubro?: string;
+  }>;
+}): string {
+  const rubroHeader = data.rubro ? ` (${formatRubroLabel(data.rubro)})` : "";
+  if (data.items.length === 0) {
+    const rubroSuffix = data.rubro ? ` de *${formatRubroLabel(data.rubro)}*` : "";
+    return (
+      `🏪 *Disponibilidad en Depósito Central para ${data.branchName}${rubroHeader}*\n\n` +
+      `No se encontraron productos${rubroSuffix} sin stock en ${data.branchName} que cuenten con stock disponible en el Depósito Central.`
+    );
+  }
+
+  const lines: string[] = [
+    `🏪 *Disponibilidad en Depósito Central para ${data.branchName}${rubroHeader}*`,
+    `_Productos con stock en Depósito que faltan o tienen saldo en cero en ${data.branchName}:_\n`,
+  ];
+
+  for (const item of data.items) {
+    const branchStockText = item.branchStock <= 0 ? "0 u." : `${formatStockQty(item.branchStock)} u.`;
+    lines.push(
+      `• *${item.description}* (Art. \`${item.articleId}\`)\n` +
+      `  Depósito: *${formatStockQty(item.depotStock)} u.* | ${data.branchName}: ${branchStockText}`
+    );
+  }
+
+  if (data.total > data.items.length) {
+    lines.push(`\n_Mostrando los primeros ${data.items.length} de ${data.total} productos disponibles en depósito._`);
+  }
+
+  lines.push(`\n💡 _Para solicitar el traslado podés pedir: «Preparame un Excel de reposición para ${data.branchName}»._`);
   return lines.join("\n").trim();
 }
 
@@ -567,14 +643,25 @@ export function formatClarificationMessage(msg: string): string {
  */
 export function formatUnknownMessage(): string {
   return (
-    "🤔 No pude reconocer tu consulta.\n\n" +
-    "Puedo ayudarte con:\n" +
-    "• *1. Stock:* _«Stock alfajor»_, _«Art 1052»_, _«Stock bajo en Depósito Central»_\n" +
-    "• *2. Pedidos:* _«¿Qué pedidos hay?»_, _«Pedidos pendientes»_, _«Detalle del pedido 2»_\n" +
-    "• *3. Reposición:* _«Reposición semanal»_, _«Reposición Centro»_, _«Reposición Jardín»_\n" +
-    "• *4. Resumen:* _«Resumen del negocio»_, _«¿Cómo estamos de stock?»_\n" +
-    "• *5. Excel de reposición:* _«Excel de cigarrillos para Centro»_, _«Planilla de bebidas para Jardín»_, _«Excel de Coca-Cola»_, _«Excel del proveedor 50350»_\n\n" +
-    "_Escribí `ayuda` para ver las opciones completas o haceme una pregunta directa._"
+    "👋 No terminé de entender tu consulta. Te muestro algunas cosas que podés pedirme:\n\n" +
+    "📦 *Consultar stock*\n" +
+    "• \"¿Cuánto stock hay del artículo 9043 en Centro?\"\n" +
+    "• \"Buscá el artículo 9043\"\n" +
+    "• \"¿Cuánto tenemos de alfajor Bon o Bon?\"\n\n" +
+    "📊 *Consultar faltantes y reposición*\n" +
+    "• \"¿Qué productos tengo que reponer en Centro?\"\n" +
+    "• \"¿Qué cigarrillos tengo que pedir para Jardín?\"\n" +
+    "• \"¿Qué productos están bajos de stock en Centro?\"\n" +
+    "• \"¿Qué productos faltan en Centro pero hay en el depósito?\"\n\n" +
+    "📄 *Generar Excel de reposición*\n" +
+    "• \"Preparame un Excel de reposición para Centro\"\n" +
+    "• \"Haceme un Excel de galletitas para Jardín\"\n" +
+    "• \"Pasame la reposición del proveedor Arcor para Centro\"\n" +
+    "• \"Generá el Excel de cigarrillos para Jardín\"\n\n" +
+    "🏪 *Consultar por sucursal*\n" +
+    "Podés consultar por *Centro* o *Jardín*. El Depósito Central abastece a ambas sucursales.\n\n" +
+    "💡 _También podés escribir el nombre de un producto o su código para buscarlo._\n\n" +
+    "¿Qué necesitás consultar?"
   );
 }
 

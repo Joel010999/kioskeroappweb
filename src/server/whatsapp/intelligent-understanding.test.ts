@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseUserMessage } from "./router";
 import {
+  clearAllLastFulfilledContexts,
   clearAllPendingClarifications,
   getPendingClarification,
   resolvePendingClarification,
@@ -37,6 +38,21 @@ vi.mock("./queries", () => ({
     total: 1,
     items: [{ articleId: 1052, description: "Bon o Bon", saldo: 2, stockStatus: "AVAILABLE" }],
   }),
+  queryDepositAvailability: vi.fn().mockImplementation(async (branchId: number, rubro?: string) => ({
+    branchName: branchId === 2 ? "Centro" : "Jardín",
+    branchId,
+    rubro,
+    total: 1,
+    items: [
+      {
+        articleId: 9043,
+        description: "Marlboro Crafted Red KS",
+        branchStock: 0,
+        depotStock: 450,
+        rubro: "Cigarrillos",
+      },
+    ],
+  })),
   queryStockAlerts: vi.fn().mockResolvedValue({
     branchName: "Centro",
     negativeCount: 0,
@@ -115,6 +131,7 @@ describe("Renderbyte — Evolución Inteligente del Bot de WhatsApp", () => {
 
   beforeEach(() => {
     clearAllPendingClarifications();
+    clearAllLastFulfilledContexts();
     clearMemoryDeduplicationCache();
   });
 
@@ -427,6 +444,279 @@ describe("Renderbyte — Evolución Inteligente del Bot de WhatsApp", () => {
       expect(mockSendDoc).not.toHaveBeenCalled();
       expect(mockSendText).toHaveBeenCalledTimes(1);
       expect(mockSendText.mock.calls[0][1]).toContain("Acceso Restringido");
+    });
+  });
+
+  describe("7. UX Conversacional — Recuperación, Intenciones y Consultas de Stock Bajo", () => {
+    it("1. '¿Qué cigarrillos están más bajos de stock en Centro?' does NOT activate literal product search", () => {
+      const res = parseUserMessage("¿Qué cigarrillos están más bajos de stock en Centro?", refDate);
+      expect(res.type).toBe("STOCK_LOW");
+      expect(res.slots.targetRubro).toBe("CIGARRILLOS");
+      expect(res.slots.branchTarget).toBe("CENTRO");
+      expect(res.slots.branchId).toBe(2);
+      expect(res.slots.productSearch).toBeUndefined();
+    });
+
+    it("2. '¿Qué tengo que pedir de cigarrillos para Jardín?' activates replenishment logic", () => {
+      const res = parseUserMessage("¿Qué tengo que pedir de cigarrillos para Jardín?", refDate);
+      expect(res.type).toBe("REPLENISHMENT");
+      expect(res.slots.targetRubro).toBe("CIGARRILLOS");
+      expect(res.slots.branchTarget).toBe("JARDIN");
+      expect(res.slots.branchId).toBe(3);
+      expect(res.slots.productSearch).toBeUndefined();
+    });
+
+    it("2b. '¿Qué productos me están faltando?' activates replenishment logic", () => {
+      const res = parseUserMessage("¿Qué productos me están faltando?", refDate);
+      expect(res.type).toBe("REPLENISHMENT");
+      expect(res.slots.needsClarification).toBe(true);
+      expect(res.slots.clarificationType).toBe("BRANCH");
+      expect(res.slots.productSearch).toBeUndefined();
+    });
+
+    it("2c. '¿Qué tengo que pedir de Coca-Cola?' activates replenishment for supplier", () => {
+      const res = parseUserMessage("¿Qué tengo que pedir de Coca-Cola?", refDate);
+      expect(res.type).toBe("REPLENISHMENT");
+      expect(res.slots.supplierName).toContain("Coca-Cola");
+      expect(res.slots.needsClarification).toBe(true);
+      expect(res.slots.clarificationType).toBe("BRANCH");
+      expect(res.slots.productSearch).toBeUndefined();
+    });
+
+    it("3. 'Preparame un Excel de reposición de galletitas para Jardín' generates correct Excel request", () => {
+      const res = parseUserMessage("Preparame un Excel de reposición de galletitas para Jardín", refDate);
+      expect(res.type).toBe("REPLENISHMENT_EXCEL");
+      expect(res.slots.targetRubro).toBe("GALLETITAS");
+      expect(res.slots.branchTarget).toBe("JARDIN");
+      expect(res.slots.branchId).toBe(3);
+      expect(res.slots.wantsExcel).toBe(true);
+      expect(res.slots.needsClarification).toBeFalsy();
+    });
+
+    it("4. '¿Qué productos faltan en Centro pero hay en el depósito?' activates deposit availability", () => {
+      const res = parseUserMessage("¿Qué productos faltan en Centro pero hay en el depósito?", refDate);
+      expect(res.type).toBe("DEPOSIT_AVAILABILITY");
+      expect(res.slots.branchTarget).toBe("CENTRO");
+      expect(res.slots.branchId).toBe(2);
+      expect(res.slots.productSearch).toBeUndefined();
+    });
+
+    it("4b. '¿Qué productos tengo en el depósito y faltan en Jardín?' activates deposit availability", () => {
+      const res = parseUserMessage("¿Qué productos tengo en el depósito y faltan en Jardín?", refDate);
+      expect(res.type).toBe("DEPOSIT_AVAILABILITY");
+      expect(res.slots.branchTarget).toBe("JARDIN");
+      expect(res.slots.branchId).toBe(3);
+      expect(res.slots.productSearch).toBeUndefined();
+    });
+
+    it("5. '¿Cuánto stock hay del artículo 9043 en Centro?' continues working", () => {
+      const res = parseUserMessage("¿Cuánto stock hay del artículo 9043 en Centro?", refDate);
+      expect(res.type).toBe("STOCK_PRODUCT");
+      expect(res.slots.articleId).toBe(9043);
+      expect(res.slots.branchTarget).toBe("CENTRO");
+    });
+
+    it("6. 'Buscá el artículo 9043' continues working", () => {
+      const res = parseUserMessage("Buscá el artículo 9043", refDate);
+      expect(res.type).toBe("STOCK_PRODUCT");
+      expect(res.slots.articleId).toBe(9043);
+    });
+
+    it("6b. Product search strips verbs and matches names cleanly", () => {
+      const res1 = parseUserMessage("Buscá Marlboro Crafted Red", refDate);
+      expect(res1.type).toBe("STOCK_PRODUCT");
+      expect(res1.slots.productSearch).toBe("marlboro crafted red");
+
+      const res2 = parseUserMessage("Buscá MARLB. CRAFTED RED KS", refDate);
+      expect(res2.type).toBe("STOCK_PRODUCT");
+      expect(res2.slots.productSearch).toBe("marlb crafted red ks");
+
+      const res3 = parseUserMessage("Buscá Crafted Red", refDate);
+      expect(res3.type).toBe("STOCK_PRODUCT");
+      expect(res3.slots.productSearch).toBe("crafted red");
+
+      const res4 = parseUserMessage("Buscá Coca-Cola", refDate);
+      expect(res4.type).toBe("STOCK_PRODUCT");
+      expect(res4.slots.productSearch).toBe("coca cola");
+    });
+
+    it("7. A truly unknown query shows the new structured help message", async () => {
+      const mockSendText = vi.fn().mockResolvedValue({ success: true, messageId: "txt_help_1" });
+      const result = await processIncomingMessage({
+        messageId: "msg_unknown_1",
+        senderPhone: testPhone,
+        textBody: "¿Cómo se llaman las tortugas ninja?",
+        configuredAllowedEnv: testPhone,
+        sendMessageFn: mockSendText,
+      });
+
+      expect(result.processed).toBe(true);
+      expect(result.intent).toBe("UNKNOWN");
+      expect(mockSendText).toHaveBeenCalledTimes(1);
+      const reply = mockSendText.mock.calls[0][1];
+      expect(reply).toContain("No terminé de entender tu consulta");
+      expect(reply).toContain("Consultar stock");
+      expect(reply).toContain("Consultar faltantes y reposición");
+      expect(reply).toContain("Generar Excel de reposición");
+      expect(reply).toContain("Consultar por sucursal");
+    });
+
+    it("8. A valid query with no results is NOT confused with an unknown intent", async () => {
+      const { queryProductStock } = await import("./queries");
+      vi.mocked(queryProductStock).mockResolvedValueOnce({ items: [], totalFound: 0 });
+
+      const mockSendText = vi.fn().mockResolvedValue({ success: true, messageId: "txt_empty_1" });
+      const result = await processIncomingMessage({
+        messageId: "msg_empty_stock_1",
+        senderPhone: testPhone,
+        textBody: "Stock alfajor espacial inexistente",
+        configuredAllowedEnv: testPhone,
+        sendMessageFn: mockSendText,
+      });
+
+      expect(result.processed).toBe(true);
+      expect(result.intent).toBe("STOCK_PRODUCT");
+      const reply = mockSendText.mock.calls[0][1];
+      expect(reply).toContain("No se encontró el producto");
+      expect(reply).not.toContain("No terminé de entender tu consulta");
+    });
+
+    it("9. Clarification answers 'Centro', 'Jardín', 'Cigarrillos' resolve properly", () => {
+      // User asked for Excel of Cigarrillos, missing branch
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: { targetRubro: "CIGARRILLOS", wantsExcel: true, branchTarget: "ALL" },
+        clarificationType: "BRANCH",
+      });
+
+      const resCentro = resolvePendingClarification(testPhone, "Centro");
+      expect(resCentro.type).toBe("RESOLVED");
+      if (resCentro.type === "RESOLVED") {
+        expect(resCentro.intent.slots.branchTarget).toBe("CENTRO");
+        expect(resCentro.intent.slots.targetRubro).toBe("CIGARRILLOS");
+      }
+
+      // Short answer: "Jardín"
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: { targetRubro: "CIGARRILLOS", wantsExcel: true, branchTarget: "ALL" },
+        clarificationType: "BRANCH",
+      });
+      const resJardin = resolvePendingClarification(testPhone, "Jardín");
+      expect(resJardin.type).toBe("RESOLVED");
+      if (resJardin.type === "RESOLVED") {
+        expect(resJardin.intent.slots.branchTarget).toBe("JARDIN");
+        expect(resJardin.intent.slots.targetRubro).toBe("CIGARRILLOS");
+      }
+
+      // Short answer: "Cigarrillos" during RUBRO clarification
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: { branchTarget: "CENTRO", branchId: 2, wantsExcel: true },
+        clarificationType: "RUBRO",
+      });
+      const resCigarrillos = resolvePendingClarification(testPhone, "Cigarrillos");
+      expect(resCigarrillos.type).toBe("RESOLVED");
+      if (resCigarrillos.type === "RESOLVED") {
+        expect(resCigarrillos.intent.slots.targetRubro).toBe("CIGARRILLOS");
+        expect(resCigarrillos.intent.slots.branchTarget).toBe("CENTRO");
+      }
+    });
+
+    it("9b. Clarification answers 'Sí', 'En Excel', 'Solo los que faltan'", () => {
+      // "Sí" during BRANCH clarification
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: { targetRubro: "CIGARRILLOS", wantsExcel: true, branchTarget: "ALL" },
+        clarificationType: "BRANCH",
+      });
+      const resSi = resolvePendingClarification(testPhone, "Sí");
+      expect(resSi.type).toBe("RE_PROMPT");
+      if (resSi.type === "RE_PROMPT") {
+        expect(resSi.message).toContain("Centro");
+        expect(resSi.message).toContain("Jardín");
+      }
+
+      // "En Excel" during BRANCH clarification switches to Excel
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT",
+        slots: { targetRubro: "CIGARRILLOS", wantsExcel: false, branchTarget: "ALL" },
+        clarificationType: "BRANCH",
+      });
+      const resExcel = resolvePendingClarification(testPhone, "En Excel");
+      // Switches format and re-prompts for branch
+      expect(resExcel.type).toBe("RE_PROMPT");
+
+      // "Solo los que faltan"
+      setPendingClarification(testPhone, {
+        intentType: "REPLENISHMENT_EXCEL",
+        slots: { targetRubro: "CIGARRILLOS", wantsExcel: true, branchTarget: "ALL" },
+        clarificationType: "BRANCH",
+      });
+      const resFaltan = resolvePendingClarification(testPhone, "Solo los que faltan");
+      expect(resFaltan.type).toBe("RE_PROMPT");
+    });
+
+    it("10. Contextual branch negation: 'Mejor haceme el Excel de Jardín, no el de Centro'", async () => {
+      const mockSendDoc = vi.fn().mockResolvedValue({ success: true, messageId: "doc_ctx_1" });
+      const mockSendText = vi.fn().mockResolvedValue({ success: true, messageId: "txt_ctx_1" });
+
+      // First query: Excel of Cigarrillos for Centro
+      await processIncomingMessage({
+        messageId: "msg_ctx_first",
+        senderPhone: testPhone,
+        textBody: "Excel de cigarrillos para Centro",
+        configuredAllowedEnv: testPhone,
+        sendMessageFn: mockSendText,
+        sendDocumentFn: mockSendDoc,
+      });
+
+      expect(mockSendDoc).toHaveBeenCalledTimes(1);
+      expect(mockSendDoc.mock.calls[0][1].fileName).toContain("CENTRO");
+
+      // Follow-up query: "Mejor haceme el Excel de Jardín, no el de Centro"
+      mockSendDoc.mockClear();
+      const followUp = await processIncomingMessage({
+        messageId: "msg_ctx_second",
+        senderPhone: testPhone,
+        textBody: "Mejor haceme el Excel de Jardín, no el de Centro",
+        configuredAllowedEnv: testPhone,
+        sendMessageFn: mockSendText,
+        sendDocumentFn: mockSendDoc,
+      });
+
+      expect(followUp.processed).toBe(true);
+      expect(followUp.intent).toBe("REPLENISHMENT_EXCEL");
+      expect(mockSendDoc).toHaveBeenCalledTimes(1);
+      expect(mockSendDoc.mock.calls[0][1].fileName).toContain("JARDIN");
+      expect(mockSendDoc.mock.calls[0][1].fileName).toContain("CIGARRILLOS");
+    });
+
+    it("11. Branch typo tolerance ('cetro' -> Centro, 'jardi' -> Jardín)", () => {
+      const resCentroTypo = parseUserMessage("Stock alfajor en cetro", refDate);
+      expect(resCentroTypo.slots.branchTarget).toBe("CENTRO");
+      expect(resCentroTypo.slots.branchId).toBe(2);
+
+      const resJardinTypo = parseUserMessage("Stock alfajor en jardi", refDate);
+      expect(resJardinTypo.slots.branchTarget).toBe("JARDIN");
+      expect(resJardinTypo.slots.branchId).toBe(3);
+    });
+
+    it("12. Dispatches deposit availability query end-to-end", async () => {
+      const mockSendText = vi.fn().mockResolvedValue({ success: true, messageId: "txt_depot_1" });
+      const result = await processIncomingMessage({
+        messageId: "msg_depot_avail_1",
+        senderPhone: testPhone,
+        textBody: "¿Qué productos faltan en Centro pero hay en el depósito?",
+        configuredAllowedEnv: testPhone,
+        sendMessageFn: mockSendText,
+      });
+
+      expect(result.processed).toBe(true);
+      expect(result.intent).toBe("DEPOSIT_AVAILABILITY");
+      expect(mockSendText).toHaveBeenCalledTimes(1);
+      expect(mockSendText.mock.calls[0][1]).toContain("Disponibilidad en Depósito Central para Centro");
+      expect(mockSendText.mock.calls[0][1]).toContain("Marlboro Crafted Red KS");
     });
   });
 });

@@ -8,9 +8,10 @@ import {
   generateReplenishmentExcelBuffer,
   isEligibleForReplenishmentExcel,
   type ReplenishmentExportItem,
+  type NegativeStockExportItem,
 } from "@/features/excel/order-export";
 import { resolveRubroName } from "@/server/catalog/rubros";
-import { calculateProductSimilarity, resolveKnownAlias } from "@/server/catalog/fuzzy-search";
+import { calculateProductSimilarity, expandSearchToken, resolveKnownAlias } from "@/server/catalog/fuzzy-search";
 import { resolveSupplier } from "@/server/catalog/suppliers";
 import type { BranchTarget } from "./types";
 
@@ -61,44 +62,98 @@ export async function queryProductStock(
   const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
 
   // 1. Find matching products in products_raw
-  const values: unknown[] = [orgId];
-  let where = "p.organization_id = $1 AND p.is_present = true";
+  let productsRes: {
+    rows: Array<{
+      article_id: number;
+      description: string;
+      brand: string | null;
+      rubro: string | null;
+      bulto: string | null;
+    }>;
+  } = { rows: [] };
 
   if (search.articleId !== undefined) {
-    values.push(search.articleId);
-    where += ` AND p.article_id = $${values.length}`;
+    productsRes = await query<{
+      article_id: number;
+      description: string;
+      brand: string | null;
+      rubro: string | null;
+      bulto: string | null;
+    }>(
+      `SELECT DISTINCT ON (p.article_id)
+         p.article_id,
+         COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
+         p.payload->>'Marca' AS brand,
+         p.payload->>'Rubro' AS rubro,
+         p.payload->>'Bulto' AS bulto
+       FROM products_raw p
+       WHERE p.organization_id = $1 AND p.is_present = true AND p.article_id = $2
+       ORDER BY p.article_id, p.branch_id
+       LIMIT 5`,
+      [orgId, search.articleId]
+    );
   } else if (search.productSearch) {
-    values.push(`%${search.productSearch}%`);
-    where += ` AND (p.payload->>'Descripcion' ILIKE $${values.length} OR p.payload->>'Marca' ILIKE $${values.length} OR p.article_id::text ILIKE $${values.length})`;
-  }
-
-  let productsRes = await query<{
-    article_id: number;
-    description: string;
-    brand: string | null;
-    rubro: string | null;
-    bulto: string | null;
-  }>(
-    `SELECT DISTINCT ON (p.article_id)
-       p.article_id,
-       COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
-       p.payload->>'Marca' AS brand,
-       p.payload->>'Rubro' AS rubro,
-       p.payload->>'Bulto' AS bulto
-     FROM products_raw p
-     WHERE ${where}
-     ORDER BY p.article_id, p.branch_id
-     LIMIT 5`,
-    values
-  );
-
-  // 1.1 Error tolerance: if 0 results and productSearch is provided, try canonical aliases and fuzzy search
-  if (productsRes.rows.length === 0 && search.productSearch) {
     const rawSearch = search.productSearch.trim();
-    const alias = resolveKnownAlias(rawSearch);
+    const cleanSearch = rawSearch.replace(/[¿?¡!,;:"'.]/g, " ").replace(/\s+/g, " ").trim();
+    const alias = resolveKnownAlias(rawSearch) || resolveKnownAlias(cleanSearch);
 
-    // Try canonical alias if available
-    if (alias && alias.toLowerCase() !== rawSearch.toLowerCase()) {
+    // 1.1 First try: Multi-token combined matching across Marca + Descripcion
+    const tokens = cleanSearch.split(/\s+/).filter((t) => t.length >= 2);
+    if (tokens.length > 0 && !/[;]|--|\/\*/.test(cleanSearch)) {
+      const tokenValues: unknown[] = [orgId];
+      const andClauses: string[] = [];
+
+      for (const token of tokens) {
+        const expansions = expandSearchToken(token);
+        const subOr: string[] = [];
+        for (const exp of expansions) {
+          tokenValues.push(`%${exp}%`);
+          subOr.push(
+            `(COALESCE(p.payload->>'Marca', '') || ' ' || COALESCE(p.payload->>'Descripcion', '')) ILIKE $${tokenValues.length}`
+          );
+        }
+        andClauses.push(`(${subOr.join(" OR ")})`);
+      }
+
+      const multiRes = await query<{
+        article_id: number;
+        description: string;
+        brand: string | null;
+        rubro: string | null;
+        bulto: string | null;
+      }>(
+        `SELECT DISTINCT ON (p.article_id)
+           p.article_id,
+           COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
+           p.payload->>'Marca' AS brand,
+           p.payload->>'Rubro' AS rubro,
+           p.payload->>'Bulto' AS bulto
+         FROM products_raw p
+         WHERE p.organization_id = $1 AND p.is_present = true
+           AND ${andClauses.join(" AND ")}
+         ORDER BY p.article_id, p.branch_id
+         LIMIT 5`,
+        tokenValues
+      );
+
+      if (multiRes.rows.length > 0) {
+        productsRes = multiRes;
+      }
+    }
+
+    // 1.2 Try canonical alias if available and still 0 results
+    if (productsRes.rows.length === 0 && alias) {
+      const aliasTokens = alias.split(/\s+/).filter((t) => t.length >= 2);
+      const aliasValues: unknown[] = [orgId];
+      const andAliasClauses: string[] = [];
+
+      for (const aToken of aliasTokens) {
+        aliasValues.push(`%${aToken}%`);
+        andAliasClauses.push(
+          `(COALESCE(p.payload->>'Marca', '') || ' ' || COALESCE(p.payload->>'Descripcion', '')) ILIKE $${aliasValues.length}`
+        );
+      }
+
       const aliasRes = await query<{
         article_id: number;
         description: string;
@@ -114,28 +169,56 @@ export async function queryProductStock(
            p.payload->>'Bulto' AS bulto
          FROM products_raw p
          WHERE p.organization_id = $1 AND p.is_present = true
-           AND (p.payload->>'Descripcion' ILIKE $2 OR p.payload->>'Marca' ILIKE $2)
+           AND ${andAliasClauses.join(" AND ")}
          ORDER BY p.article_id, p.branch_id
          LIMIT 5`,
-        [orgId, `%${alias}%`]
+        aliasValues
       );
+
       if (aliasRes.rows.length > 0) {
         productsRes = aliasRes;
       }
     }
 
-    // If still 0, try token-based candidate search with fuzzy scoring (skip if text contains SQL injection patterns)
-    if (productsRes.rows.length === 0 && !/[;]|--|\/\*/.test(rawSearch) && rawSearch.length >= 3) {
-      const tokens = rawSearch.split(/\s+/).filter((t) => t.length >= 3);
+    // 1.3 Direct single substring fallback if still 0
+    if (productsRes.rows.length === 0) {
+      const directRes = await query<{
+        article_id: number;
+        description: string;
+        brand: string | null;
+        rubro: string | null;
+        bulto: string | null;
+      }>(
+        `SELECT DISTINCT ON (p.article_id)
+           p.article_id,
+           COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
+           p.payload->>'Marca' AS brand,
+           p.payload->>'Rubro' AS rubro,
+           p.payload->>'Bulto' AS bulto
+         FROM products_raw p
+         WHERE p.organization_id = $1 AND p.is_present = true
+           AND ((COALESCE(p.payload->>'Marca', '') || ' ' || COALESCE(p.payload->>'Descripcion', '')) ILIKE $2
+                OR p.article_id::text ILIKE $2)
+         ORDER BY p.article_id, p.branch_id
+         LIMIT 5`,
+        [orgId, `%${rawSearch}%`]
+      );
+      if (directRes.rows.length > 0) {
+        productsRes = directRes;
+      }
+    }
+
+    // 1.4 If still 0, try token-based candidate search with fuzzy scoring
+    if (productsRes.rows.length === 0 && !/[;]|--|\/\*/.test(rawSearch) && cleanSearch.length >= 3) {
+      const broadTokens = cleanSearch.split(/\s+/).filter((t) => t.length >= 3);
       const orClauses: string[] = [];
       const tokenValues: unknown[] = [orgId];
 
-      for (const token of tokens) {
+      for (const token of broadTokens) {
         tokenValues.push(`%${token}%`);
         orClauses.push(
           `p.payload->>'Descripcion' ILIKE $${tokenValues.length} OR p.payload->>'Marca' ILIKE $${tokenValues.length}`
         );
-        // If token has >= 4 chars, also search on 3-char prefix to catch single-letter typos
         if (token.length >= 4) {
           tokenValues.push(`%${token.slice(0, 3)}%`);
           orClauses.push(
@@ -169,13 +252,13 @@ export async function queryProductStock(
           const scored = broadRes.rows
             .map((p) => ({
               product: p,
-              match: calculateProductSimilarity(rawSearch, p.description, p.brand),
+              match: calculateProductSimilarity(cleanSearch, p.description, p.brand),
             }))
-            .filter((item) => item.match.score >= 0.65)
+            .filter((item) => item.match.score >= 0.6)
             .sort((a, b) => b.match.score - a.match.score);
 
           if (scored.length > 0) {
-            productsRes = { rows: scored.slice(0, 5).map((s) => s.product) } as any;
+            productsRes = { rows: scored.slice(0, 5).map((s) => s.product) };
           }
         }
       }
@@ -257,15 +340,19 @@ export async function queryProductStock(
 
 /**
  * Queries lowest stock products using existing getStock service and real branch filters.
+ * Supports filtering by rubro or supplier when specified.
  * Falls back to latest processed depot snapshot if Depósito Central has no rows in stock_levels_raw.
  */
 export async function queryLowStock(
   branchTarget: BranchTarget = "ALL",
   branchId?: number,
-  limit = 10
+  limit = 10,
+  targetRubro?: string,
+  targetSupplierCode?: string
 ): Promise<{
   branchName: string;
   branchId: number;
+  rubro?: string;
   total: number;
   items: Array<{
     articleId: number;
@@ -278,8 +365,59 @@ export async function queryLowStock(
     branchId ??
     (branchTarget === "CENTRO" ? 2 : branchTarget === "JARDIN" ? 3 : branchTarget === "DEPOSITO" ? 1 : 1);
   const branchName = targetBranch === 1 ? "Depósito Central" : targetBranch === 2 ? "Centro" : "Jardín";
+  const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
 
   try {
+    // 1. If rubro or supplier filter is requested, query stock_levels_raw with products_raw directly
+    if (targetRubro || targetSupplierCode) {
+      const filters: string[] = ["sl.organization_id = $1", "sl.branch_id = $2"];
+      const qValues: unknown[] = [orgId, targetBranch];
+
+      if (targetRubro) {
+        qValues.push(`%${targetRubro}%`);
+        filters.push(
+          `(p.payload->>'Rubro' ILIKE $${qValues.length} OR p.payload->>'Clasificacion' ILIKE $${qValues.length} OR p.payload->>'Descripcion' ILIKE $${qValues.length} OR p.payload->>'Marca' ILIKE $${qValues.length})`
+        );
+      }
+      if (targetSupplierCode) {
+        qValues.push(targetSupplierCode);
+        filters.push(`p.payload->>'Proveedor' = $${qValues.length}`);
+      }
+
+      qValues.push(limit);
+
+      const rubroStockRes = await query<{
+        article_id: number;
+        description: string;
+        saldo: string;
+      }>(
+        `SELECT DISTINCT ON (sl.article_id)
+           sl.article_id,
+           COALESCE(p.payload->>'Descripcion', 'Artículo ' || sl.article_id) AS description,
+           sl.saldo
+         FROM stock_levels_raw sl
+         JOIN products_raw p ON p.organization_id = sl.organization_id AND p.article_id = sl.article_id AND p.branch_id = sl.branch_id
+         WHERE ${filters.join(" AND ")}
+         ORDER BY sl.article_id, sl.saldo ASC
+         LIMIT $${qValues.length}`,
+        qValues
+      );
+
+      const sortedRows = rubroStockRes.rows.sort((a, b) => Number(a.saldo) - Number(b.saldo));
+      return {
+        branchName,
+        branchId: targetBranch,
+        rubro: targetRubro,
+        total: sortedRows.length,
+        items: sortedRows.map((r) => ({
+          articleId: r.article_id,
+          description: r.description,
+          saldo: Number(r.saldo),
+          stockStatus: Number(r.saldo) <= 0 ? "OUT_OF_STOCK" : "AVAILABLE",
+        })),
+      };
+    }
+
     const scope = await resolveScope(targetBranch);
     const stockData = await getStock(scope, { limit, offset: 0 });
 
@@ -299,7 +437,6 @@ export async function queryLowStock(
 
     // If branch 1 (Depósito Central) has no rows in stock_levels_raw, check processed stock_snapshots
     if (targetBranch === 1) {
-      const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
       const snapRes = await query<{
         article_id: number;
         description: string | null;
@@ -345,6 +482,103 @@ export async function queryLowStock(
     return {
       branchName,
       branchId: targetBranch,
+      total: 0,
+      items: [],
+    };
+  }
+}
+
+/**
+ * Queries items available in Depósito Central that are out of stock or low in a retail branch.
+ */
+export async function queryDepositAvailability(
+  branchId: number = 2,
+  rubro?: string,
+  limit = 10
+): Promise<{
+  branchName: string;
+  branchId: number;
+  rubro?: string;
+  total: number;
+  items: Array<{
+    articleId: number;
+    description: string;
+    branchStock: number;
+    depotStock: number;
+    rubro?: string;
+  }>;
+}> {
+  const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
+  const targetBranch = branchId === 3 ? 3 : 2;
+  const branchName = targetBranch === 2 ? "Centro" : "Jardín";
+
+  try {
+    const qValues: unknown[] = [orgId, targetBranch];
+    let rubroFilter = "";
+    if (rubro) {
+      qValues.push(`%${rubro}%`);
+      rubroFilter = `AND (p.payload->>'Rubro' ILIKE $${qValues.length} OR p.payload->>'Clasificacion' ILIKE $${qValues.length} OR p.payload->>'Descripcion' ILIKE $${qValues.length})`;
+    }
+    qValues.push(limit);
+
+    const res = await query<{
+      article_id: number;
+      description: string;
+      rubro: string | null;
+      branch_stock: string;
+      depot_stock: string;
+    }>(
+      `WITH latest_snapshot AS (
+         SELECT id FROM stock_snapshots WHERE organization_id = $1 AND status = 'PROCESSED' ORDER BY uploaded_at DESC LIMIT 1
+       ),
+       depot_stock AS (
+         SELECT i.article_id, i.stock_quantity::numeric AS depot_saldo
+         FROM stock_snapshot_items i
+         JOIN latest_snapshot ls ON ls.id = i.snapshot_id
+         WHERE i.stock_quantity::numeric > 0
+       ),
+       branch_stock AS (
+         SELECT sl.article_id, SUM(sl.saldo) AS branch_saldo
+         FROM stock_levels_raw sl
+         WHERE sl.organization_id = $1 AND sl.branch_id = $2
+         GROUP BY sl.article_id
+       )
+       SELECT DISTINCT ON (p.article_id)
+         p.article_id,
+         COALESCE(p.payload->>'Descripcion', 'Artículo ' || p.article_id) AS description,
+         p.payload->>'Rubro' AS rubro,
+         COALESCE(bs.branch_saldo, 0) AS branch_stock,
+         ds.depot_saldo AS depot_stock
+       FROM depot_stock ds
+       JOIN products_raw p ON p.organization_id = $1 AND p.article_id = ds.article_id AND p.is_present = true
+       LEFT JOIN branch_stock bs ON bs.article_id = ds.article_id
+       WHERE COALESCE(bs.branch_saldo, 0) <= 0
+         ${rubroFilter}
+       ORDER BY p.article_id, ds.depot_saldo DESC
+       LIMIT $${qValues.length}`,
+      qValues
+    );
+
+    const sorted = res.rows.sort((a, b) => Number(b.depot_stock) - Number(a.depot_stock));
+
+    return {
+      branchName,
+      branchId: targetBranch,
+      rubro,
+      total: sorted.length,
+      items: sorted.map((r) => ({
+        articleId: r.article_id,
+        description: r.description,
+        branchStock: Number(r.branch_stock),
+        depotStock: Number(r.depot_stock),
+        rubro: r.rubro || undefined,
+      })),
+    };
+  } catch {
+    return {
+      branchName,
+      branchId: targetBranch,
+      rubro,
       total: 0,
       items: [],
     };
@@ -546,12 +780,15 @@ export async function queryReplenishmentExcelData(
     description: string | null;
     currentStock: number;
   }> = [];
+  const negativeStockExportItems: NegativeStockExportItem[] = [];
   const eligibleExportItems: ReplenishmentExportItem[] = [];
   const seen = new Set<number>();
 
   for (const item of replenishment.items) {
     if (seen.has(item.article_id)) continue;
     seen.add(item.article_id);
+
+    const resolvedRubro = resolveRubroName(item.classification_code, item.rubro) || rubro || "Sin rubro";
 
     // Negative stock tracking: do NOT fabricate quantities for negative stock products
     if (item.stock_current < 0 || item.status === "NEGATIVE_STOCK") {
@@ -561,12 +798,20 @@ export async function queryReplenishmentExcelData(
         description: item.description,
         currentStock: item.stock_current,
       });
+      negativeStockExportItems.push({
+        article_id: item.article_id,
+        description: item.description,
+        current_stock: item.stock_current,
+        rubro: resolvedRubro,
+        supplier_code: item.supplier_code,
+        stock_depot: item.stock_depot,
+        weekly_demand: item.weekly_demand,
+      });
     }
 
     // Differentiate clearly: requested_quantity is the intended order quantity,
     // which for initial suggestion equals suggested_quantity (or 0 if negative/null)
     const requested = item.requested_quantity > 0 ? item.requested_quantity : (item.suggested_quantity ?? 0);
-    const resolvedRubro = resolveRubroName(item.classification_code, item.rubro) || rubro || "Sin rubro";
 
     // Apply mandatory export eligibility rule: incluirEnExcel = seleccionado && cantidadSolicitada > 0
     if (
@@ -596,7 +841,7 @@ export async function queryReplenishmentExcelData(
   }
 
   let excelBuffer: Buffer | null = null;
-  if (eligibleExportItems.length > 0) {
+  if (eligibleExportItems.length > 0 || negativeStockExportItems.length > 0) {
     let title = "Reposición Semanal";
     if (rubro && supplierCode) {
       const dispRubro = rubro === "__SIN_RUBRO__" ? "Sin rubro" : rubro;
@@ -612,6 +857,7 @@ export async function queryReplenishmentExcelData(
       branchLabel: branchName,
       planningDate,
       title,
+      negativeStockItems: negativeStockExportItems,
     });
   }
 

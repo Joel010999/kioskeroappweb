@@ -139,10 +139,16 @@ export const CANONICAL_SUPPLIERS: SupplierEntry[] = [
     brands: ["SMOKING", "SMOKLING"],
   },
   {
-    code: "600058",
+    code: "50185",
     name: "Coca-Cola / Andina",
-    aliases: ["coca cola", "cocacola", "coca", "andina", "fanta", "sprite"],
+    aliases: ["coca cola", "cocacola", "coca", "coca-cola", "andina", "fanta", "sprite"],
     brands: ["COCA COLA", "FANTA", "SPRITE", "POWERADE", "CEPITA"],
+  },
+  {
+    code: "600058",
+    name: "Coca-Cola / Andina (Distribuidora)",
+    aliases: ["coca cola andina", "distribuidora andina"],
+    brands: ["COCA COLA", "FANTA", "SPRITE"],
   },
 ];
 

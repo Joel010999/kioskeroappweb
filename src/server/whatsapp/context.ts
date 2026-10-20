@@ -71,6 +71,56 @@ export function clearAllPendingClarifications(): void {
   pendingClarifications.clear();
 }
 
+export type LastFulfilledContext = {
+  intentType: IntentType;
+  slots: ParsedSlots;
+  completedAt: number;
+};
+
+// In-memory fulfilled context store keyed by normalized phone number
+const lastFulfilledContexts = new Map<string, LastFulfilledContext>();
+const FULFILLED_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL
+
+export function setLastFulfilledContext(
+  senderPhone: string,
+  context: {
+    intentType: IntentType;
+    slots: ParsedSlots;
+  }
+): void {
+  const key = normalizePhoneNumber(senderPhone);
+  if (!key) return;
+  lastFulfilledContexts.set(key, {
+    ...context,
+    completedAt: Date.now(),
+  });
+}
+
+export function getLastFulfilledContext(
+  senderPhone: string
+): LastFulfilledContext | null {
+  const key = normalizePhoneNumber(senderPhone);
+  if (!key) return null;
+  const item = lastFulfilledContexts.get(key);
+  if (!item) return null;
+  if (Date.now() - item.completedAt > FULFILLED_TTL_MS) {
+    lastFulfilledContexts.delete(key);
+    return null;
+  }
+  return item;
+}
+
+export function clearLastFulfilledContext(senderPhone: string): void {
+  const key = normalizePhoneNumber(senderPhone);
+  if (key) {
+    lastFulfilledContexts.delete(key);
+  }
+}
+
+export function clearAllLastFulfilledContexts(): void {
+  lastFulfilledContexts.clear();
+}
+
 export type ClarificationResolutionResult =
   | { type: "RESOLVED"; intent: ParsedIntent }
   | { type: "CANCELLED"; message: string }
@@ -381,8 +431,32 @@ export function resolvePendingClarification(
       };
     }
 
-    // User switched rubro without giving branch yet
-    if (newRubroInfo.canonical && newRubroInfo.canonical !== pending.slots.targetRubro) {
+    // User confirmed or provided affirmative response ("Sí", "Dale", "Ok")
+    if (/^(si|sí|dale|ok|bueno|por favor|confirmo|dale si)$/i.test(clean)) {
+      const targetDesc =
+        pending.slots.supplierName && targetRubro
+          ? `de *${formatRubroLabel(targetRubro)}* (${pending.slots.supplierName})`
+          : pending.slots.supplierName
+          ? `del proveedor *${pending.slots.supplierName}*`
+          : targetRubro
+          ? `de *${formatRubroLabel(targetRubro)}*`
+          : "de reposición";
+      return {
+        type: "RE_PROMPT",
+        message: `¡Genial! Por favor indicame para cuál sucursal querés la reposición ${targetDesc}: *Centro* o *Jardín*.`,
+      };
+    }
+
+    // User filtered: "Solo los que faltan"
+    if (/^(solo\s+los\s+que\s+faltan|los\s+que\s+faltan|solo\s+faltantes|faltantes)$/i.test(clean)) {
+      return {
+        type: "RE_PROMPT",
+        message: `Entendido, se incluirán únicamente los productos que requieran reposición. Por favor indicame para qué sucursal: *Centro* o *Jardín*.`,
+      };
+    }
+
+    // User specified a rubro without giving branch yet (e.g. "Cigarrillos")
+    if (newRubroInfo.canonical) {
       setPendingClarification(senderPhone, {
         ...pending,
         slots: { ...pending.slots, targetRubro: newRubroInfo.canonical },
@@ -390,7 +464,7 @@ export function resolvePendingClarification(
       const rubroLabel = formatRubroLabel(newRubroInfo.canonical);
       return {
         type: "RE_PROMPT",
-        message: `Entendido, cambiamos al rubro *${rubroLabel}*. Por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
+        message: `Para generar el Excel de reposición de *${rubroLabel}*, por favor indicame si lo necesitás para *Centro* o *Jardín*.`,
       };
     }
 
@@ -780,7 +854,25 @@ export function resolvePendingClarification(
       }
     }
 
-    // E. User provided only a branch (e.g. "Centro" or "para Jardín")
+    // E. User confirmed or provided affirmative response ("Sí", "Dale", "Ok")
+    if (/^(si|sí|dale|ok|bueno|por favor|confirmo|dale si)$/i.test(clean)) {
+      const bLabel = pending.slots.branchTarget === "JARDIN" ? "Jardín" : "Centro";
+      return {
+        type: "RE_PROMPT",
+        message: `Para preparar la reposición de *${bLabel}*, indicame el rubro (ej. *Cigarrillos*, *Galletitas*, *Bebidas*) o el proveedor (ej. *Arcor*).`,
+      };
+    }
+
+    // User filtered: "Solo los que faltan"
+    if (/^(solo\s+los\s+que\s+faltan|los\s+que\s+faltan|solo\s+faltantes|faltantes)$/i.test(clean)) {
+      const bLabel = pending.slots.branchTarget === "JARDIN" ? "Jardín" : "Centro";
+      return {
+        type: "RE_PROMPT",
+        message: `Entendido, se incluirán solo los productos con faltantes en *${bLabel}*. ¿De qué rubro o proveedor lo necesitás? (ej. *Cigarrillos*, *Galletitas*, *Arcor*).`,
+      };
+    }
+
+    // F. User provided only a branch (e.g. "Centro" or "para Jardín")
     if (branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN") {
       setPendingClarification(senderPhone, {
         ...pending,
@@ -797,7 +889,7 @@ export function resolvePendingClarification(
       };
     }
 
-    // F. User entered an explicit other command
+    // G. User entered an explicit other command
     const freshIntent = parseUserMessage(text);
     if (
       freshIntent.type !== "UNKNOWN" &&
@@ -944,4 +1036,151 @@ export function resolvePendingClarification(
 
   // Fallback: if user writes something totally unrelated, allow fresh interpretation
   return { type: "NEW_INTENT" };
+}
+
+/**
+ * Resolves conversational continuation or correction of the last fulfilled context.
+ * For example:
+ * - "Mejor haceme el Excel de Jardín, no el de Centro" (switches branch, retains rubro/supplier)
+ * - "Ahora hacelo para Jardín" / "En Jardín" / "Jardín"
+ * - "En Excel" / "Hacelo en Excel" / "Generá el Excel" / "Sí"
+ * - "Cigarrillos" / "Arcor"
+ * - "Solo los que faltan"
+ */
+export function resolveContextualCorrection(
+  senderPhone: string,
+  text: string,
+  initialIntent: ParsedIntent
+): ParsedIntent | null {
+  const last = getLastFulfilledContext(senderPhone);
+  if (!last) return null;
+
+  const clean = cleanText(text);
+
+  // If user asked for an explicit other command, do not hijack it
+  if (
+    initialIntent.type === "GREETING" ||
+    initialIntent.type === "HELP" ||
+    initialIntent.type === "ORDER_DETAIL" ||
+    initialIntent.type === "ORDERS_RECENT" ||
+    initialIntent.type === "METRICS_SUMMARY" ||
+    initialIntent.type === "SYSTEM_HEALTH"
+  ) {
+    return null;
+  }
+
+  const branchInfo = extractBranch(text);
+  const mentionsBranch = branchInfo.target === "CENTRO" || branchInfo.target === "JARDIN";
+  const isCorrectionPhrase =
+    /\b(mejor|cambialo|cambia|ahora|no el de|no para|en vez de|para|y para)\b/i.test(clean);
+
+  const isExcelSwitch =
+    /^(?:en\s+excel|hacelo\s+en\s+excel|generame\s+el\s+excel|generar\s+excel|pasame\s+el\s+excel|excel|en\s+planilla|la\s+planilla|planilla|si|sí|dale|ok|bueno)$/i.test(
+      clean
+    ) ||
+    (/\b(excel|planilla)\b/i.test(clean) && !/\b(ventas|pedidos)\b/i.test(clean));
+
+  const isOnlyFaltantes = /^(solo\s+los\s+que\s+faltan|los\s+que\s+faltan|solo\s+faltantes|faltantes)$/i.test(clean);
+
+  const isLastReplenish =
+    last.intentType === "REPLENISHMENT" || last.intentType === "REPLENISHMENT_EXCEL";
+
+  if (isLastReplenish) {
+    // A. User wants Excel format of previous replenishment: "En Excel", "Hacelo en Excel", "Sí"
+    if (isExcelSwitch && !mentionsBranch && !initialIntent.slots.targetRubro && !initialIntent.slots.supplierCode) {
+      return {
+        type: "REPLENISHMENT_EXCEL",
+        rawText: text,
+        slots: {
+          ...last.slots,
+          wantsExcel: true,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // B. User changes or specifies branch: "Mejor haceme el Excel de Jardín, no el de Centro", "Ahora para Jardín", "Jardín"
+    if (
+      mentionsBranch &&
+      (initialIntent.type === "REPLENISHMENT_EXCEL" ||
+        initialIntent.type === "REPLENISHMENT" ||
+        initialIntent.type === "UNKNOWN" ||
+        /^(centro|jardin|jardín)$/i.test(clean) ||
+        isCorrectionPhrase)
+    ) {
+      const newRubro = initialIntent.slots.targetRubro || last.slots.targetRubro;
+      const newSupplierCode = initialIntent.slots.supplierCode || last.slots.supplierCode;
+      const newSupplierName = initialIntent.slots.supplierName || last.slots.supplierName;
+      const wantsExcel =
+        initialIntent.slots.wantsExcel ??
+        (last.slots.wantsExcel || /\b(excel|planilla)\b/i.test(clean));
+
+      const effectiveIntentType: IntentType = wantsExcel ? "REPLENISHMENT_EXCEL" : "REPLENISHMENT";
+
+      return {
+        type: effectiveIntentType,
+        rawText: text,
+        slots: {
+          ...last.slots,
+          ...initialIntent.slots,
+          branchTarget: branchInfo.target,
+          branchId: branchInfo.branchId,
+          targetRubro: newRubro,
+          supplierCode: newSupplierCode,
+          supplierName: newSupplierName,
+          wantsExcel,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // C. User gave a rubro (e.g. "Cigarrillos") or supplier (e.g. "Arcor")
+    if (
+      (/^(cigarrillos|galletitas|golosinas|chocolates|bebidas|almacen|almacén)$/i.test(clean) ||
+        /^(arcor|baggio|mondelez|coca|coca cola|massalin|philip morris)$/i.test(clean)) &&
+      (initialIntent.type === "UNKNOWN" || initialIntent.type === "STOCK_PRODUCT")
+    ) {
+      const rubroInfo = resolveCanonicalRubroFromText(clean);
+      const supplierInfo = extractSupplierCandidate(clean);
+      const resSup = supplierInfo.candidate ? resolveSupplier(supplierInfo.candidate) : null;
+
+      const effectiveRubro = rubroInfo.canonical || (resSup?.status !== "EXACT" ? last.slots.targetRubro : undefined);
+      const effectiveSupplierCode = resSup?.status === "EXACT" ? resSup.supplier.code : last.slots.supplierCode;
+      const effectiveSupplierName = resSup?.status === "EXACT" ? resSup.supplier.name : last.slots.supplierName;
+
+      return {
+        type: last.intentType,
+        rawText: text,
+        slots: {
+          ...last.slots,
+          targetRubro: effectiveRubro,
+          supplierCode: effectiveSupplierCode,
+          supplierName: effectiveSupplierName,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        },
+        confidence: 0.95,
+      };
+    }
+
+    // D. "Solo los que faltan"
+    if (isOnlyFaltantes) {
+      return {
+        type: last.intentType,
+        rawText: text,
+        slots: {
+          ...last.slots,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        },
+        confidence: 0.95,
+      };
+    }
+  }
+
+  return null;
 }
