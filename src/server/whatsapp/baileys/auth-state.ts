@@ -193,20 +193,61 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
       const data: { [id: string]: SignalDataTypeMap[T] } = {};
       if (ids.length === 0) return data;
 
+      const keyIdMap = new Map<string, string>();
+      const keyIds: string[] = [];
+      for (const id of ids) {
+        const keyId = `${type}:${id}`;
+        keyIdMap.set(keyId, id);
+        keyIds.push(keyId);
+      }
+
       let retrievedCount = 0;
-      await Promise.all(
-        ids.map(async (id) => {
-          const keyId = `${type}:${id}`;
-          let value = await readItem<SignalDataTypeMap[T]>(keyId);
-          if (type === "app-state-sync-key" && value) {
-            value = (proto.Message.AppStateSyncKeyData.fromObject(value as any) as unknown) as SignalDataTypeMap[T];
+
+      // 1. Try batch retrieval from PostgreSQL in a single round-trip to avoid pool exhaustion
+      try {
+        const res = await query<EncryptedPayload & { key_id: string }>(
+          `SELECT key_id, ciphertext, iv, tag FROM whatsapp_baileys_session
+           WHERE session_id = $1 AND key_id = ANY($2)`,
+          [sessionId, keyIds]
+        );
+
+        if (res.rows && res.rows.length > 0) {
+          for (const row of res.rows) {
+            const originalId = keyIdMap.get(row.key_id);
+            if (!originalId) continue;
+            try {
+              const decryptedJson = decryptSessionData(row, key);
+              let parsed = JSON.parse(decryptedJson, BufferJSON.reviver) as SignalDataTypeMap[T];
+              if (type === "app-state-sync-key" && parsed) {
+                parsed = (proto.Message.AppStateSyncKeyData.fromObject(parsed as any) as unknown) as SignalDataTypeMap[T];
+              }
+              data[originalId] = parsed;
+              keyIdMap.delete(row.key_id);
+              retrievedCount++;
+            } catch {
+              // individual decryption error, will fall back or leave undefined
+            }
           }
-          if (value !== null && value !== undefined) {
-            data[id] = value;
-            retrievedCount++;
-          }
-        })
-      );
+        }
+      } catch {
+        // DB batch failed or running in test mock; fallback to individual readItem
+      }
+
+      // 2. Fallback for any remaining keys (e.g. in-memory store in unit tests)
+      if (keyIdMap.size > 0) {
+        await Promise.all(
+          Array.from(keyIdMap.entries()).map(async ([keyId, originalId]) => {
+            let value = await readItem<SignalDataTypeMap[T]>(keyId);
+            if (type === "app-state-sync-key" && value) {
+              value = (proto.Message.AppStateSyncKeyData.fromObject(value as any) as unknown) as SignalDataTypeMap[T];
+            }
+            if (value !== null && value !== undefined) {
+              data[originalId] = value;
+              retrievedCount++;
+            }
+          })
+        );
+      }
 
       if (!process.env.VITEST && ids.length > 0) {
         console.log(
@@ -217,7 +258,7 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
       return data;
     },
     set: async (data: SignalDataSet): Promise<void> => {
-      const tasks: Promise<void>[] = [];
+      const tasks: Array<() => Promise<void>> = [];
 
       for (const category of Object.keys(data) as Array<keyof SignalDataTypeMap>) {
         const categoryData = data[category];
@@ -228,14 +269,19 @@ export async function initPostgresAuthState(options: SessionStoreOptions = {}): 
           const keyId = `${category}:${id}`;
 
           if (value === null || value === undefined) {
-            tasks.push(deleteItem(keyId));
+            tasks.push(() => deleteItem(keyId));
           } else {
-            tasks.push(writeItem(keyId, value));
+            tasks.push(() => writeItem(keyId, value));
           }
         }
       }
 
-      await Promise.all(tasks);
+      // Concurrency control: Execute writes in batches of 5 to protect the 10-connection PostgreSQL pool
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < tasks.length; i += CHUNK_SIZE) {
+        const batch = tasks.slice(i, i + CHUNK_SIZE);
+        await Promise.all(batch.map((fn) => fn()));
+      }
     },
   };
 

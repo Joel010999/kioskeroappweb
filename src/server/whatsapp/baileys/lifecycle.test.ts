@@ -5,6 +5,8 @@ import {
   extractMessageText,
   extractSenderPhone,
   startBaileysWorker,
+  classifyDisconnectReason,
+  calculateReconnectDelay,
 } from "./connection";
 import { clearMemoryAuthStateStore } from "./auth-state";
 
@@ -280,4 +282,121 @@ describe("Baileys Worker Lifecycle & Event Handling", () => {
       await worker.stop();
     });
   });
+
+  describe("Disconnect Reason Classification & Progressive Backoff", () => {
+    it("accurately classifies all Baileys and WhatsApp status codes", () => {
+      // 401 loggedOut: unrecoverable session
+      const c401 = classifyDisconnectReason(DisconnectReason.loggedOut);
+      expect(c401.isRecoverable).toBe(false);
+      expect(c401.isLoggedOut).toBe(true);
+      expect(c401.reason).toBe("logged_out");
+
+      // 403 forbidden: unrecoverable
+      const c403 = classifyDisconnectReason(DisconnectReason.forbidden);
+      expect(c403.isRecoverable).toBe(false);
+      expect(c403.reason).toBe("forbidden");
+
+      // 440 connectionReplaced: conflict, recoverable after other instance backs off
+      const c440 = classifyDisconnectReason(DisconnectReason.connectionReplaced);
+      expect(c440.isRecoverable).toBe(true);
+      expect(c440.isConflict).toBe(true);
+      expect(c440.reason).toBe("connection_replaced");
+
+      // 515 restartRequired: companion sync restart, recoverable immediately
+      const c515 = classifyDisconnectReason(DisconnectReason.restartRequired);
+      expect(c515.isRecoverable).toBe(true);
+      expect(c515.isRestartRequired).toBe(true);
+      expect(c515.reason).toBe("restart_required");
+
+      // 408 timedOut: keep-alive or network drop, recoverable
+      const c408 = classifyDisconnectReason(DisconnectReason.timedOut);
+      expect(c408.isRecoverable).toBe(true);
+      expect(c408.reason).toBe("timed_out");
+
+      // 428 connectionClosed: recoverable
+      const c428 = classifyDisconnectReason(DisconnectReason.connectionClosed);
+      expect(c428.isRecoverable).toBe(true);
+      expect(c428.reason).toBe("connection_closed");
+
+      // 500 badSession: recoverable
+      const c500 = classifyDisconnectReason(DisconnectReason.badSession);
+      expect(c500.isRecoverable).toBe(true);
+      expect(c500.reason).toBe("bad_session");
+
+      // 503 unavailableService: recoverable
+      const c503 = classifyDisconnectReason(DisconnectReason.unavailableService);
+      expect(c503.isRecoverable).toBe(true);
+      expect(c503.reason).toBe("unavailable_service");
+
+      // Generic node socket error without status code: recoverable
+      const cNet = classifyDisconnectReason(undefined, new Error("ECONNRESET"));
+      expect(cNet.isRecoverable).toBe(true);
+      expect(cNet.reason).toBe("network_error");
+    });
+
+    it("calculates progressive reconnect delay with jitter and specific overrides", () => {
+      // 515 restartRequired: quick restart
+      expect(calculateReconnectDelay(515, 0)).toBe(2000);
+      expect(calculateReconnectDelay(DisconnectReason.restartRequired, 4)).toBe(2000);
+
+      // 440 conflict: 10s - 15s window to allow other instance to release
+      const delay440 = calculateReconnectDelay(440, 1);
+      expect(delay440).toBeGreaterThanOrEqual(10000);
+      expect(delay440).toBeLessThanOrEqual(15000);
+
+      // Progressive backoff increases with consecutive attempts
+      const delayAttempt0 = calculateReconnectDelay(408, 0);
+      const delayAttempt2 = calculateReconnectDelay(408, 2);
+      const delayAttempt4 = calculateReconnectDelay(408, 4);
+
+      expect(delayAttempt0).toBeGreaterThanOrEqual(2000);
+      expect(delayAttempt2).toBeGreaterThanOrEqual(delayAttempt0);
+      expect(delayAttempt4).toBeGreaterThanOrEqual(delayAttempt2);
+
+      // Cap at ~60s (+ jitter up to 2s) for recoverable network drops
+      const delayCapped = calculateReconnectDelay(408, 20);
+      expect(delayCapped).toBeLessThanOrEqual(62000);
+
+      // 401 / 403 spaced-out verification intervals
+      const delay401_0 = calculateReconnectDelay(401, 0);
+      expect(delay401_0).toBeGreaterThanOrEqual(15000);
+      expect(delay401_0).toBeLessThanOrEqual(20000);
+
+      const delay401_1 = calculateReconnectDelay(401, 1);
+      expect(delay401_1).toBeGreaterThanOrEqual(30000);
+      expect(delay401_1).toBeLessThanOrEqual(35000);
+
+      const delay401_4 = calculateReconnectDelay(401, 4);
+      expect(delay401_4).toBeGreaterThanOrEqual(300000);
+      expect(delay401_4).toBeLessThanOrEqual(305000);
+    });
+
+    it("passes structured classification into onConnectionClose callback", async () => {
+      const onConnectionClose = vi.fn();
+      const worker = await startBaileysWorker({ onConnectionClose });
+
+      mockEv.emit("connection.update", {
+        connection: "close",
+        lastDisconnect: {
+          error: {
+            output: { statusCode: DisconnectReason.connectionReplaced },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(onConnectionClose).toHaveBeenCalled();
+        const [shouldReconnect, statusCode, error, classification] = onConnectionClose.mock.calls[0];
+        expect(shouldReconnect).toBe(true);
+        expect(statusCode).toBe(440);
+        expect(classification).toBeDefined();
+        expect(classification.reason).toBe("connection_replaced");
+        expect(classification.isConflict).toBe(true);
+        expect(classification.isRecoverable).toBe(true);
+      });
+
+      await worker.stop();
+    });
+  });
 });
+

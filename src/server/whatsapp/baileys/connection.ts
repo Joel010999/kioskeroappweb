@@ -11,6 +11,154 @@ import { normalizePhoneNumber, getPhoneVariants, maskPhone } from "../auth";
 import { processIncomingMessage } from "../processor";
 import type { SendDocumentOptions, SendMessageResult } from "../types";
 
+export type DisconnectClassification = {
+  statusCode?: number;
+  reason: string;
+  isRecoverable: boolean;
+  isLoggedOut: boolean;
+  isConflict: boolean;
+  isRestartRequired: boolean;
+  description: string;
+};
+
+/**
+ * Classifies Baileys / WhatsApp disconnection reasons from WebSocket status code and error.
+ * Differentiates recoverable network/sync events from genuinely invalidated sessions.
+ */
+export function classifyDisconnectReason(
+  statusCode?: number,
+  error?: Error
+): DisconnectClassification {
+  if (statusCode === DisconnectReason.loggedOut) { // 401
+    return {
+      statusCode,
+      reason: "logged_out",
+      isRecoverable: false,
+      isLoggedOut: true,
+      isConflict: false,
+      isRestartRequired: false,
+      description: "WhatsApp session logged out or unauthorized (status 401). Companion unlinked on mobile device.",
+    };
+  }
+  if (statusCode === DisconnectReason.forbidden) { // 403
+    return {
+      statusCode,
+      reason: "forbidden",
+      isRecoverable: false,
+      isLoggedOut: false,
+      isConflict: false,
+      isRestartRequired: false,
+      description: "WhatsApp connection forbidden / account restricted (status 403).",
+    };
+  }
+  if (statusCode === DisconnectReason.connectionReplaced) { // 440
+    return {
+      statusCode,
+      reason: "connection_replaced",
+      isRecoverable: true,
+      isLoggedOut: false,
+      isConflict: true,
+      isRestartRequired: false,
+      description: "Connection conflict: another socket connected with this session (status 440).",
+    };
+  }
+  if (statusCode === DisconnectReason.restartRequired) { // 515
+    return {
+      statusCode,
+      reason: "restart_required",
+      isRecoverable: true,
+      isLoggedOut: false,
+      isConflict: false,
+      isRestartRequired: true,
+      description: "WhatsApp server requested restart for session/crypto sync (status 515).",
+    };
+  }
+  if (statusCode === DisconnectReason.timedOut || statusCode === DisconnectReason.connectionLost) { // 408
+    return {
+      statusCode,
+      reason: "timed_out",
+      isRecoverable: true,
+      isLoggedOut: false,
+      isConflict: false,
+      isRestartRequired: false,
+      description: "Connection timed out or keep-alive ping expired (status 408).",
+    };
+  }
+  if (statusCode === DisconnectReason.connectionClosed) { // 428
+    return {
+      statusCode,
+      reason: "connection_closed",
+      isRecoverable: true,
+      isLoggedOut: false,
+      isConflict: false,
+      isRestartRequired: false,
+      description: "WebSocket connection closed by remote server (status 428).",
+    };
+  }
+  if (statusCode === DisconnectReason.unavailableService) { // 503
+    return {
+      statusCode,
+      reason: "unavailable_service",
+      isRecoverable: true,
+      isLoggedOut: false,
+      isConflict: false,
+      isRestartRequired: false,
+      description: "WhatsApp service temporarily unavailable or overloaded (status 503).",
+    };
+  }
+  if (statusCode === DisconnectReason.badSession) { // 500
+    return {
+      statusCode,
+      reason: "bad_session",
+      isRecoverable: true,
+      isLoggedOut: false,
+      isConflict: false,
+      isRestartRequired: false,
+      description: "Session data sync issue or unexpected server stream error (status 500).",
+    };
+  }
+
+  return {
+    statusCode,
+    reason: "network_error",
+    isRecoverable: true,
+    isLoggedOut: false,
+    isConflict: false,
+    isRestartRequired: false,
+    description: `Transient network disconnect or socket termination (${error?.message || "unknown"}).`,
+  };
+}
+
+/**
+ * Calculates progressive delay for reconnection with exponential backoff and jitter.
+ * Prevents hammering WhatsApp servers during transient network or service drops.
+ */
+export function calculateReconnectDelay(statusCode?: number, attemptCount: number = 0): number {
+  // 515 (restartRequired): companion setup sync restart, fast turnaround
+  if (statusCode === DisconnectReason.restartRequired || statusCode === 515) {
+    return 2000;
+  }
+  // 440 (connectionReplaced / conflict): allow previous socket or other instance to finish teardown
+  if (statusCode === DisconnectReason.connectionReplaced || statusCode === 440) {
+    return 10000 + Math.floor(Math.random() * 5000); // 10s - 15s
+  }
+  // 401 (loggedOut / unauthorized) or 403 (forbidden): spaced-out verification backoff to avoid rate-limiting
+  // while preserving auto-recovery if WhatsApp had a transient auth or cluster glitch
+  if (statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === DisconnectReason.forbidden || statusCode === 403) {
+    const intervals = [15000, 30000, 60000, 120000, 300000];
+    const base = intervals[Math.min(attemptCount, intervals.length - 1)];
+    const jitter = Math.floor(Math.random() * 5000);
+    return base + jitter;
+  }
+  // Progressive exponential backoff with jitter
+  const baseDelay = 2000;
+  const factor = 1.5;
+  const maxDelay = 60000;
+  const calculated = Math.min(maxDelay, baseDelay * Math.pow(factor, Math.min(attemptCount, 10)));
+  const jitter = Math.floor(Math.random() * 2000);
+  return Math.floor(calculated + jitter);
+}
+
 export type BaileysWorkerConfig = {
   sessionId?: string;
   pairingNumber?: string;
@@ -18,7 +166,12 @@ export type BaileysWorkerConfig = {
   cleanUnregisteredSession?: boolean;
   forceCleanSession?: boolean;
   onConnectionOpen?: () => void;
-  onConnectionClose?: (shouldReconnect: boolean, statusCode?: number, error?: Error) => void;
+  onConnectionClose?: (
+    shouldReconnect: boolean,
+    statusCode?: number,
+    error?: Error,
+    classification?: DisconnectClassification
+  ) => void;
   onPairingCode?: (code: string) => void;
   logger?: pino.Logger;
 };
@@ -160,6 +313,11 @@ export async function startBaileysWorker(
     printQRInTerminal: false,
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    connectTimeoutMs: 30_000,
+    keepAliveIntervalMs: 25_000, // Active ping every 25s prevents cloud proxies from closing idle TCP sockets
+    defaultQueryTimeoutMs: 60_000,
+    retryRequestDelayMs: 500,
+    maxMsgRetryCount: 5,
   });
 
   // Pairing Code handling (if phone number provided and device is not yet registered)
@@ -206,7 +364,7 @@ export async function startBaileysWorker(
     const { connection, lastDisconnect } = update;
 
     if (connection === "open") {
-      logger.info("Baileys connection established successfully.");
+      logger.info("[WHATSAPP BOT] Baileys connection established successfully.");
       await safeSaveCreds();
       await clearEncryptedPairingCode(sessionId);
       config.onConnectionOpen?.();
@@ -216,20 +374,29 @@ export async function startBaileysWorker(
       const statusCode =
         (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode ??
         (lastDisconnect?.error as { statusCode?: number })?.statusCode;
-      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const error = lastDisconnect?.error as Error | undefined;
+      const classification = classifyDisconnectReason(statusCode, error);
 
-      logger.warn({ statusCode, isLoggedOut, err: lastDisconnect?.error }, "Baileys connection closed.");
+      logger.warn(
+        {
+          statusCode: classification.statusCode,
+          reason: classification.reason,
+          isRecoverable: classification.isRecoverable,
+          description: classification.description,
+        },
+        `[WHATSAPP BOT] Connection closed: ${classification.description}`
+      );
 
-      if (isLoggedOut) {
+      if (classification.isLoggedOut || classification.reason === "forbidden") {
         logger.error(
-          { statusCode, err: lastDisconnect?.error },
-          "WhatsApp session disconnected or conflict encountered (status 401). Preserving session data in PostgreSQL."
+          { statusCode: classification.statusCode, reason: classification.reason },
+          "[WHATSAPP BOT] WhatsApp session unauthorized or invalidated. Preserving session data in PostgreSQL."
         );
         await clearEncryptedPairingCode(sessionId);
-        config.onConnectionClose?.(false, statusCode, lastDisconnect?.error as Error);
+        config.onConnectionClose?.(false, statusCode, error, classification);
       } else if (!isStopping) {
-        // Reconnect needed
-        config.onConnectionClose?.(true, statusCode, lastDisconnect?.error as Error);
+        // Recoverable reconnection needed
+        config.onConnectionClose?.(classification.isRecoverable, statusCode, error, classification);
       }
     }
   });
@@ -418,20 +585,34 @@ export async function startBaileysWorker(
 
       const effectivePhone = senderPhone || extractPhoneFromJid(remoteJid);
       if (!effectivePhone) {
-        logger.warn({ messageId, remoteJid }, "[WHATSAPP BOT] Unable to resolve sender phone. Skipping.");
+        logger.warn(
+          { messageId, remoteJidMasked: maskPhone(remoteJid) },
+          "[WHATSAPP BOT] Unable to resolve sender phone. Skipping."
+        );
         continue;
       }
 
-      await processIncomingMessage({
-        messageId,
-        senderPhone: effectivePhone,
-        replyTo: remoteJid, // Always reply to the original conversation JID
-        textBody,
-        senderName,
-        configuredAllowedEnv: config.allowedNumbersEnv,
-        sendMessageFn: async (to, text) => sendMessage(to, text),
-        sendDocumentFn: async (to, doc) => sendDocument(to, doc),
-      });
+      try {
+        await processIncomingMessage({
+          messageId,
+          senderPhone: effectivePhone,
+          replyTo: remoteJid, // Always reply to the original conversation JID
+          textBody,
+          senderName,
+          configuredAllowedEnv: config.allowedNumbersEnv,
+          sendMessageFn: async (to, text) => sendMessage(to, text),
+          sendDocumentFn: async (to, doc) => sendDocument(to, doc),
+        });
+      } catch (procErr) {
+        logger.error(
+          {
+            messageId,
+            senderMasked: maskPhone(effectivePhone),
+            err: procErr instanceof Error ? procErr.message : procErr,
+          },
+          "[WHATSAPP BOT] Unexpected error processing incoming message."
+        );
+      }
     }
   });
 
