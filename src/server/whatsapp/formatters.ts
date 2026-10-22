@@ -2,15 +2,14 @@ import type { ProductStockItem } from "./queries";
 import type { BranchTarget } from "./types";
 import type { Order } from "@/server/orders/repository";
 import { formatRubroLabel } from "./router";
+import {
+  formatBuenosAiresDate,
+  formatBuenosAiresDateTime,
+  type BranchProvenance,
+} from "@/server/inventory/freshness";
 
 function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "No registrada";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
-  } catch {
-    return iso.slice(0, 10);
-  }
+  return formatBuenosAiresDate(iso);
 }
 
 function statusToEmoji(status: string): string {
@@ -43,10 +42,11 @@ export function formatStockQty(qty: number): string {
 }
 
 /**
- * Formats stock query results across locations.
+ * Formats stock query results across locations with strict data freshness,
+ * source provenance, and clear distinction between digital records and confirmed physical stock.
  */
 export function formatStockResponse(
-  data: { items: ProductStockItem[]; totalFound: number },
+  data: { items: ProductStockItem[]; totalFound: number; queriedAt?: string },
   branchTarget: BranchTarget,
   searchQuery?: string
 ): string {
@@ -75,17 +75,69 @@ export function formatStockResponse(
 
     const stockParts: string[] = [];
 
+    // 1. Centro (POS)
     if (branchTarget === "ALL" || branchTarget === "CENTRO") {
-      const centroText = item.stockCentro !== null ? `${formatStockQty(item.stockCentro)} u.` : "Sin datos";
+      let centroText = "";
+      if (item.stockCentro !== null) {
+        const qtyStr = `${formatStockQty(item.stockCentro)} u.`;
+        if (item.isCentroCurrent === false && item.centroProvenance?.lastUpdatedAt) {
+          const syncDate = formatBuenosAiresDateTime(item.centroProvenance.lastUpdatedAt);
+          centroText = `${qtyStr} ⚠️ _(Dato del ${syncDate} - sincronización demorada)_`;
+        } else if (item.stockCentro < 0) {
+          centroText = `${qtyStr} ⚠️ _(Saldo negativo en sistema, verificar físico)_`;
+        } else if (item.stockCentro === 0) {
+          centroText = `0 u. _(Sin stock registrado)_`;
+        } else {
+          centroText = qtyStr;
+        }
+      } else if (item.centroProvenance?.freshnessLevel === "UNAVAILABLE") {
+        centroText = "Fuente no disponible temporalmente";
+      } else {
+        centroText = "Sin registro en sistema";
+      }
       stockParts.push(`• *Centro:* ${centroText}`);
     }
+
+    // 2. Jardín (POS)
     if (branchTarget === "ALL" || branchTarget === "JARDIN") {
-      const jardinText = item.stockJardin !== null ? `${formatStockQty(item.stockJardin)} u.` : "Sin datos";
+      let jardinText = "";
+      if (item.stockJardin !== null) {
+        const qtyStr = `${formatStockQty(item.stockJardin)} u.`;
+        if (item.isJardinCurrent === false && item.jardinProvenance?.lastUpdatedAt) {
+          const syncDate = formatBuenosAiresDateTime(item.jardinProvenance.lastUpdatedAt);
+          jardinText = `${qtyStr} ⚠️ _(Dato del ${syncDate} - sincronización demorada)_`;
+        } else if (item.stockJardin < 0) {
+          jardinText = `${qtyStr} ⚠️ _(Saldo negativo en sistema, verificar físico)_`;
+        } else if (item.stockJardin === 0) {
+          jardinText = `0 u. _(Sin stock registrado)_`;
+        } else {
+          jardinText = qtyStr;
+        }
+      } else if (item.jardinProvenance?.freshnessLevel === "UNAVAILABLE") {
+        jardinText = "Fuente no disponible temporalmente";
+      } else {
+        jardinText = "Sin registro en sistema";
+      }
       stockParts.push(`• *Jardín:* ${jardinText}`);
     }
+
+    // 3. Depósito Central (Warehouse - Live connection via stock_levels_raw)
     if (branchTarget === "ALL" || branchTarget === "DEPOSITO") {
-      const snapDate = item.depotSnapshotDate ? ` (Excel ${formatDate(item.depotSnapshotDate)})` : "";
-      const depotText = item.stockDepot !== null ? `${formatStockQty(item.stockDepot)} u.${snapDate}` : "Sin datos";
+      let depotText = "";
+      const isDepotSyncDelayed = item.depotProvenance?.freshnessLevel === "OUTDATED";
+      const depotSync = item.depotProvenance?.lastUpdatedAt
+        ? `(sincronizado ${formatBuenosAiresDateTime(item.depotProvenance.lastUpdatedAt)}${isDepotSyncDelayed ? " - con demora" : ""})`
+        : "";
+
+      if (item.depotProvenance?.freshnessLevel === "UNAVAILABLE") {
+        depotText = "Fuente no disponible en este momento";
+      } else if (!item.depotRecorded || item.stockDepot === null) {
+        depotText = "Sin registro en sistema";
+      } else if (item.stockDepot <= 0) {
+        depotText = `Sin stock ${depotSync}`.trim();
+      } else {
+        depotText = `${formatStockQty(item.stockDepot)} u. ${depotSync}`.trim();
+      }
       stockParts.push(`• *Depósito:* ${depotText}`);
     }
 
@@ -93,10 +145,12 @@ export function formatStockResponse(
     lines.push("");
   }
 
+  lines.push("_Nota: Las cantidades reflejan los registros digitales del sistema al momento de la consulta. No confirman existencia física si ocurrieron ventas, traslados o mermas posteriores._");
+
   if (data.totalFound > data.items.length) {
-    lines.push(`_Mostrando los primeros ${data.items.length} de ${data.totalFound} productos encontrados._`);
+    lines.push(`\n_Mostrando los primeros ${data.items.length} de ${data.totalFound} productos encontrados._`);
   } else if (data.items.length > 1 && data.items.length <= 5) {
-    lines.push(`_Tip: Podés consultar el código exacto de una presentación (ej. 'art ${data.items[0].articleId}')._`);
+    lines.push(`\n_Tip: Podés consultar el código exacto de una presentación (ej. 'art ${data.items[0].articleId}')._`);
   }
 
   return lines.join("\n").trim();
@@ -111,8 +165,15 @@ export function formatStockAlertsResponse(data: {
   outOfStockCount: number;
   negativeItems: Array<{ articleId: number; description: string; saldo: number }>;
   outOfStockItems: Array<{ articleId: number; description: string }>;
+  provenance?: BranchProvenance;
+  isCurrent?: boolean;
 }): string {
   const lines: string[] = [`⚠️ *Alertas de Stock — Sucursal ${data.branchName}*\n`];
+
+  if (data.isCurrent === false && data.provenance?.lastUpdatedAt) {
+    const syncDate = formatBuenosAiresDateTime(data.provenance.lastUpdatedAt);
+    lines.push(`⚠️ *Aviso de sincronización:* La fuente de ${data.branchName} fue actualizada por última vez el ${syncDate} (demorada).\n`);
+  }
 
   lines.push(`• *En cero (con ventas recientes):* ${data.outOfStockCount} productos`);
   lines.push(`• *Con saldo negativo:* ${data.negativeCount} productos\n`);
@@ -133,7 +194,7 @@ export function formatStockAlertsResponse(data: {
     lines.push("");
   }
 
-  lines.push("_Datos basados en la última sincronización del sistema._");
+  lines.push("_Datos basados en registros digitales del sistema. No confirman existencia física en salón._");
   return lines.join("\n").trim();
 }
 
@@ -155,6 +216,8 @@ export function formatReplenishmentResponse(data: {
     weeklyDemand: number | null;
   }>;
   totalSuggested: number;
+  depotProvenance?: BranchProvenance;
+  isDepotCurrent?: boolean;
 }): string {
   const targetLabel =
     data.rubro && (data.supplierName || data.supplierCode)
@@ -176,11 +239,23 @@ export function formatReplenishmentResponse(data: {
     `📋 *Sugerencias de Reposición${targetLabel} — Sucursal ${data.branchName}*`,
     `_Ciclo proyectado:_ ${formatDate(data.planningDate)}`,
     `_Total a reponer sugerido:_ ${data.totalSuggested} productos\n`,
-    "*Principales sugerencias recomendadas:*",
   ];
 
+  if (data.isDepotCurrent === false) {
+    lines.push("⚠️ *Aviso Depósito:* El stock de Depósito no cuenta con conexión en tiempo real confirmada. Se recomienda verificar existencias físicas antes de confirmar despachos.\n");
+  }
+
+  lines.push("*Principales sugerencias recomendadas:*");
+
   for (const item of data.items) {
-    const depotInfo = item.stockDepot !== null ? ` | Depo: ${formatStockQty(item.stockDepot)} u.` : "";
+    let depotInfo = "";
+    if (item.stockDepot !== null) {
+      if (data.isDepotCurrent === false) {
+        depotInfo = ` | Depo: s/conf. (${formatStockQty(item.stockDepot)} u.)`;
+      } else {
+        depotInfo = ` | Depo: ${formatStockQty(item.stockDepot)} u.`;
+      }
+    }
     lines.push(
       `• *${item.description}* (Art. \`${item.articleId}\`)\n` +
       `  *Pedir: ${formatStockQty(item.suggestedQuantity)} u.* (Stock actual: ${formatStockQty(item.stockCurrent)} u.${depotInfo})`
@@ -465,10 +540,7 @@ export function formatSystemHealthResponse(health: {
  * Formats help menu.
  */
 /**
- * Formats low stock query response.
- */
-/**
- * Formats low stock query response.
+ * Formats low stock query response with data freshness warnings.
  */
 export function formatLowStockResponse(data: {
   branchName: string;
@@ -481,6 +553,8 @@ export function formatLowStockResponse(data: {
     saldo: number;
     stockStatus: "OUT_OF_STOCK" | "AVAILABLE";
   }>;
+  provenance?: BranchProvenance;
+  isCurrent?: boolean;
 }): string {
   const rubroHeader = data.rubro ? ` (${formatRubroLabel(data.rubro)})` : "";
   if (data.items.length === 0) {
@@ -494,6 +568,11 @@ export function formatLowStockResponse(data: {
   const lines: string[] = [
     `📉 *Productos con menor stock — ${data.branchName}${rubroHeader}*\n`,
   ];
+
+  if (data.isCurrent === false && data.provenance?.lastUpdatedAt) {
+    const dateStr = formatBuenosAiresDate(data.provenance.lastUpdatedAt);
+    lines.push(`⚠️ *Aviso de actualidad:* Los registros de ${data.branchName} provienen de una sincronización del ${dateStr} y pueden no reflejar el inventario actual.\n`);
+  }
 
   for (const item of data.items) {
     let saldoText = `${formatStockQty(item.saldo)} u.`;
@@ -509,11 +588,13 @@ export function formatLowStockResponse(data: {
     lines.push(`\n_Mostrando los primeros ${data.items.length} de ${data.total} productos registrados con menor stock._`);
   }
 
+  lines.push("\n_Nota: Registros digitales sujetos a validación física en salón/depósito._");
   return lines.join("\n").trim();
 }
 
 /**
  * Formats deposit availability response (items in Depósito Central missing in a retail branch).
+ * If the Depósito snapshot is outdated or absent, refuses to present unconfirmed stock.
  */
 export function formatDepositAvailabilityResponse(data: {
   branchName: string;
@@ -527,8 +608,24 @@ export function formatDepositAvailabilityResponse(data: {
     depotStock: number;
     rubro?: string;
   }>;
+  depotProvenance?: BranchProvenance;
+  isDepotCurrent?: boolean;
 }): string {
   const rubroHeader = data.rubro ? ` (${formatRubroLabel(data.rubro)})` : "";
+
+  // If depot is outdated or unverified:
+  if (data.isDepotCurrent === false) {
+    const dateStr = data.depotProvenance?.lastUpdatedAt
+      ? formatBuenosAiresDateTime(data.depotProvenance.lastUpdatedAt)
+      : "anterior";
+    return (
+      `🏪 *Disponibilidad en Depósito Central para ${data.branchName}${rubroHeader}*\n\n` +
+      `⚠️ *No es posible confirmar la disponibilidad actual en Depósito en este momento.*\n` +
+      `La conexión con la fuente de Depósito Central no se encuentra actualizada o disponible (última actualización: ${dateStr}). ` +
+      `Por seguridad operativa, no se confirman traslados sin un inventario de depósito vigente.`
+    );
+  }
+
   if (data.items.length === 0) {
     const rubroSuffix = data.rubro ? ` de *${formatRubroLabel(data.rubro)}*` : "";
     return (
@@ -555,6 +652,7 @@ export function formatDepositAvailabilityResponse(data: {
   }
 
   lines.push(`\n💡 _Para solicitar el traslado podés pedir: «Preparame un Excel de reposición para ${data.branchName}»._`);
+  lines.push("_Nota: Cantidades obtenidas del sistema en tiempo real. Sujetas a confirmación física al momento de preparar._");
   return lines.join("\n").trim();
 }
 

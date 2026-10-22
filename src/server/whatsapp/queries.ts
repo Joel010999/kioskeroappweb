@@ -13,6 +13,13 @@ import {
 import { resolveRubroName } from "@/server/catalog/rubros";
 import { calculateProductSimilarity, expandSearchToken, resolveKnownAlias } from "@/server/catalog/fuzzy-search";
 import { resolveSupplier } from "@/server/catalog/suppliers";
+import {
+  getAllBranchesProvenance,
+  getBranchProvenance,
+  getServerTime,
+  logInventoryAudit,
+  type BranchProvenance,
+} from "@/server/inventory/freshness";
 import type { BranchTarget } from "./types";
 
 const DEFAULT_ORG_ID = 1;
@@ -48,6 +55,17 @@ export type ProductStockItem = {
   stockJardin: number | null;
   stockDepot: number | null;
   depotSnapshotDate?: string;
+  depotSnapshotFilename?: string;
+  isCentroCurrent?: boolean;
+  isJardinCurrent?: boolean;
+  isDepotCurrent?: boolean;
+  centroRecorded?: boolean;
+  jardinRecorded?: boolean;
+  depotRecorded?: boolean;
+  centroProvenance?: BranchProvenance;
+  jardinProvenance?: BranchProvenance;
+  depotProvenance?: BranchProvenance;
+  queriedAt?: string;
 };
 
 /**
@@ -269,6 +287,12 @@ export async function queryProductStock(
     return { items: [], totalFound: 0 };
   }
 
+  const now = getServerTime();
+  const branchesProv = await getAllBranchesProvenance(orgId, now);
+  const depotProv = branchesProv[1];
+  const centroProv = branchesProv[2];
+  const jardinProv = branchesProv[3];
+
   const articleIds = productsRes.rows.map((r) => r.article_id);
 
   // 2. Query live stock in POS locations from stock_levels_raw
@@ -289,35 +313,40 @@ export async function queryProductStock(
     posMap.set(`${row.article_id}_${row.branch_id}`, Number(row.saldo));
   }
 
-  // 3. Query depot stock from stock_snapshots
-  const depotSnapRes = await query<{
-    article_id: number;
-    stock_quantity: string;
-    uploaded_at: string;
-  }>(
-    `SELECT i.article_id, i.stock_quantity, s.uploaded_at
-     FROM stock_snapshot_items i
-     JOIN stock_snapshots s ON s.id = i.snapshot_id
-     WHERE s.organization_id = $1 AND s.status = 'PROCESSED' AND i.article_id = ANY($2::integer[])
-     ORDER BY s.uploaded_at DESC`,
-    [orgId, articleIds]
-  );
-
-  const depotMap = new Map<number, { stock: number; uploadedAt: string }>();
-  for (const row of depotSnapRes.rows) {
-    if (!depotMap.has(row.article_id)) {
-      depotMap.set(row.article_id, {
-        stock: Number(row.stock_quantity),
-        uploadedAt: row.uploaded_at,
-      });
-    }
-  }
+  // Audit log source querying and timestamps
+  logInventoryAudit({
+    queryType: "STOCK_PRODUCT",
+    articleIds,
+    searchQuery: search.productSearch,
+    sources: {
+      centro: {
+        status: centroProv.freshnessLevel,
+        sourceUpdatedAt: centroProv.lastUpdatedAt,
+        isCurrent: centroProv.freshnessLevel === "CURRENT",
+      },
+      jardin: {
+        status: jardinProv.freshnessLevel,
+        sourceUpdatedAt: jardinProv.lastUpdatedAt,
+        isCurrent: jardinProv.freshnessLevel === "CURRENT",
+      },
+      deposito: {
+        status: depotProv.freshnessLevel,
+        sourceUpdatedAt: depotProv.lastUpdatedAt,
+        isCurrent: depotProv.freshnessLevel === "CURRENT",
+        originalFilename: depotProv.originalFilename,
+      },
+    },
+    queriedAt: now.toISOString(),
+  });
 
   const items: ProductStockItem[] = productsRes.rows.map((p) => {
-    const centroStock = posMap.get(`${p.article_id}_2`) ?? null;
-    const jardinStock = posMap.get(`${p.article_id}_3`) ?? null;
-    const depotInfo = depotMap.get(p.article_id);
-    const depotDbStock = posMap.get(`${p.article_id}_1`) ?? null;
+    const hasCentro = posMap.has(`${p.article_id}_2`);
+    const hasJardin = posMap.has(`${p.article_id}_3`);
+    const hasDepot = posMap.has(`${p.article_id}_1`);
+
+    const centroStock = hasCentro ? posMap.get(`${p.article_id}_2`)! : null;
+    const jardinStock = hasJardin ? posMap.get(`${p.article_id}_3`)! : null;
+    const depotStock = hasDepot ? posMap.get(`${p.article_id}_1`)! : null;
 
     return {
       articleId: p.article_id,
@@ -330,8 +359,19 @@ export async function queryProductStock(
       stockDepot:
         branchTarget === "CENTRO" || branchTarget === "JARDIN"
           ? null
-          : depotInfo ? depotInfo.stock : depotDbStock,
-      depotSnapshotDate: depotInfo?.uploadedAt,
+          : (depotProv.freshnessLevel === "UNAVAILABLE" ? null : depotStock),
+      depotSnapshotDate: depotProv.historicalSnapshot?.uploadedAt || undefined,
+      depotSnapshotFilename: depotProv.historicalSnapshot?.originalFilename || undefined,
+      centroProvenance: centroProv,
+      jardinProvenance: jardinProv,
+      depotProvenance: depotProv,
+      isCentroCurrent: centroProv.freshnessLevel === "CURRENT" && hasCentro,
+      isJardinCurrent: jardinProv.freshnessLevel === "CURRENT" && hasJardin,
+      isDepotCurrent: depotProv.freshnessLevel === "CURRENT" && hasDepot,
+      centroRecorded: hasCentro,
+      jardinRecorded: hasJardin,
+      depotRecorded: hasDepot,
+      queriedAt: now.toISOString(),
     };
   });
 
@@ -360,12 +400,29 @@ export async function queryLowStock(
     saldo: number;
     stockStatus: "OUT_OF_STOCK" | "AVAILABLE";
   }>;
+  provenance?: BranchProvenance;
+  isCurrent?: boolean;
 }> {
   const targetBranch =
     branchId ??
     (branchTarget === "CENTRO" ? 2 : branchTarget === "JARDIN" ? 3 : branchTarget === "DEPOSITO" ? 1 : 1);
   const branchName = targetBranch === 1 ? "Depósito Central" : targetBranch === 2 ? "Centro" : "Jardín";
   const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
+  const now = getServerTime();
+  const branchProv = await getBranchProvenance(targetBranch, orgId, now);
+
+  logInventoryAudit({
+    queryType: "STOCK_LOW",
+    sources: {
+      [branchName]: {
+        status: branchProv.freshnessLevel,
+        sourceUpdatedAt: branchProv.lastUpdatedAt,
+        isCurrent: branchProv.freshnessLevel === "CURRENT",
+        originalFilename: branchProv.originalFilename,
+      },
+    },
+    queriedAt: now.toISOString(),
+  });
 
   try {
     // 1. If rubro or supplier filter is requested, query stock_levels_raw with products_raw directly
@@ -415,6 +472,8 @@ export async function queryLowStock(
           saldo: Number(r.saldo),
           stockStatus: Number(r.saldo) <= 0 ? "OUT_OF_STOCK" : "AVAILABLE",
         })),
+        provenance: branchProv,
+        isCurrent: branchProv.freshnessLevel === "CURRENT",
       };
     }
 
@@ -432,44 +491,9 @@ export async function queryLowStock(
           saldo: r.saldo,
           stockStatus: r.stock_status,
         })),
+        provenance: branchProv,
+        isCurrent: branchProv.freshnessLevel === "CURRENT",
       };
-    }
-
-    // If branch 1 (Depósito Central) has no rows in stock_levels_raw, check processed stock_snapshots
-    if (targetBranch === 1) {
-      const snapRes = await query<{
-        article_id: number;
-        description: string | null;
-        stock_quantity: string;
-      }>(
-        `SELECT i.article_id,
-                COALESCE(p.payload->>'Descripcion', 'Artículo ' || i.article_id) AS description,
-                i.stock_quantity
-         FROM stock_snapshot_items i
-         JOIN stock_snapshots s ON s.id = i.snapshot_id
-         LEFT JOIN products_raw p ON p.organization_id = s.organization_id AND p.article_id = i.article_id
-         WHERE s.organization_id = $1 AND s.status = 'PROCESSED'
-         ORDER BY s.uploaded_at DESC, i.stock_quantity::numeric ASC
-         LIMIT $2`,
-        [orgId, limit]
-      );
-
-      if (snapRes.rows && snapRes.rows.length > 0) {
-        return {
-          branchName,
-          branchId: targetBranch,
-          total: snapRes.rows.length,
-          items: snapRes.rows.map((r) => {
-            const saldo = Number(r.stock_quantity);
-            return {
-              articleId: r.article_id,
-              description: r.description ?? `Artículo ${r.article_id}`,
-              saldo,
-              stockStatus: saldo <= 0 ? "OUT_OF_STOCK" : "AVAILABLE",
-            };
-          }),
-        };
-      }
     }
 
     return {
@@ -477,6 +501,8 @@ export async function queryLowStock(
       branchId: targetBranch,
       total: 0,
       items: [],
+      provenance: branchProv,
+      isCurrent: branchProv.freshnessLevel === "CURRENT",
     };
   } catch {
     return {
@@ -484,12 +510,16 @@ export async function queryLowStock(
       branchId: targetBranch,
       total: 0,
       items: [],
+      provenance: branchProv,
+      isCurrent: false,
     };
   }
 }
 
 /**
  * Queries items available in Depósito Central that are out of stock or low in a retail branch.
+ * Validates freshness: if Depósito snapshot is older than threshold (e.g. 48h) or absent,
+ * does NOT confirm products as available.
  */
 export async function queryDepositAvailability(
   branchId: number = 2,
@@ -507,10 +537,41 @@ export async function queryDepositAvailability(
     depotStock: number;
     rubro?: string;
   }>;
+  depotProvenance?: BranchProvenance;
+  isDepotCurrent?: boolean;
 }> {
   const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
   const targetBranch = branchId === 3 ? 3 : 2;
   const branchName = targetBranch === 2 ? "Centro" : "Jardín";
+  const now = getServerTime();
+  const depotProv = await getBranchProvenance(1, orgId, now);
+
+  logInventoryAudit({
+    queryType: "DEPOSIT_AVAILABILITY",
+    sources: {
+      deposito: {
+        status: depotProv.freshnessLevel,
+        sourceUpdatedAt: depotProv.lastUpdatedAt,
+        isCurrent: depotProv.freshnessLevel === "CURRENT",
+        originalFilename: depotProv.originalFilename,
+      },
+    },
+    queriedAt: now.toISOString(),
+  });
+
+  // Strict validation: if depot connection is outdated or missing,
+  // DO NOT claim products are available in warehouse!
+  if (depotProv.freshnessLevel !== "CURRENT") {
+    return {
+      branchName,
+      branchId: targetBranch,
+      rubro,
+      total: 0,
+      items: [],
+      depotProvenance: depotProv,
+      isDepotCurrent: false,
+    };
+  }
 
   try {
     const qValues: unknown[] = [orgId, targetBranch];
@@ -528,14 +589,12 @@ export async function queryDepositAvailability(
       branch_stock: string;
       depot_stock: string;
     }>(
-      `WITH latest_snapshot AS (
-         SELECT id FROM stock_snapshots WHERE organization_id = $1 AND status = 'PROCESSED' ORDER BY uploaded_at DESC LIMIT 1
-       ),
-       depot_stock AS (
-         SELECT i.article_id, i.stock_quantity::numeric AS depot_saldo
-         FROM stock_snapshot_items i
-         JOIN latest_snapshot ls ON ls.id = i.snapshot_id
-         WHERE i.stock_quantity::numeric > 0
+      `WITH depot_stock AS (
+         SELECT sl.article_id, SUM(sl.saldo) AS depot_saldo
+         FROM stock_levels_raw sl
+         WHERE sl.organization_id = $1 AND sl.branch_id = 1
+         GROUP BY sl.article_id
+         HAVING SUM(sl.saldo) > 0
        ),
        branch_stock AS (
          SELECT sl.article_id, SUM(sl.saldo) AS branch_saldo
@@ -573,6 +632,8 @@ export async function queryDepositAvailability(
         depotStock: Number(r.depot_stock),
         rubro: r.rubro || undefined,
       })),
+      depotProvenance: depotProv,
+      isDepotCurrent: true,
     };
   } catch {
     return {
@@ -581,6 +642,8 @@ export async function queryDepositAvailability(
       rubro,
       total: 0,
       items: [],
+      depotProvenance: depotProv,
+      isDepotCurrent: false,
     };
   }
 }
@@ -597,28 +660,45 @@ export async function queryStockAlerts(
   outOfStockCount: number;
   negativeItems: Array<{ articleId: number; description: string; saldo: number }>;
   outOfStockItems: Array<{ articleId: number; description: string }>;
+  provenance?: BranchProvenance;
+  isCurrent?: boolean;
 }> {
   const targetBranch =
     branchId ??
     (branchTarget === "CENTRO" ? 2 : branchTarget === "JARDIN" ? 3 : branchTarget === "DEPOSITO" ? 1 : 2);
   const scope = await resolveScope(targetBranch);
   const branchName = targetBranch === 1 ? "Depósito Central" : targetBranch === 2 ? "Centro" : "Jardín";
+  const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
 
-  // Use getAttention with a 30-day window
-  const today = new Date("2026-10-18T12:00:00.000Z");
-  const thirtyDaysAgo = new Date(today.getTime() - 30 * 86_400_000);
+  const now = getServerTime();
+  const branchProv = await getBranchProvenance(targetBranch, orgId, now);
+
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86_400_000);
   const fromStr = thirtyDaysAgo.toISOString().slice(0, 10);
-  const toStr = today.toISOString().slice(0, 10);
+  const toStr = now.toISOString().slice(0, 10);
 
   const period: Period = {
     from: fromStr,
     to: toStr,
-    toExclusive: today.toISOString().slice(0, 10),
+    toExclusive: now.toISOString().slice(0, 10),
     previousFrom: fromStr,
     previousToExclusive: toStr,
   };
 
   const attention = await getAttention(scope, period);
+
+  logInventoryAudit({
+    queryType: "STOCK_OUT_ALERT",
+    sources: {
+      [branchName]: {
+        status: branchProv.freshnessLevel,
+        sourceUpdatedAt: branchProv.lastUpdatedAt,
+        isCurrent: branchProv.freshnessLevel === "CURRENT",
+        originalFilename: branchProv.originalFilename,
+      },
+    },
+    queriedAt: now.toISOString(),
+  });
 
   return {
     branchName,
@@ -633,6 +713,8 @@ export async function queryStockAlerts(
       articleId: Number(i.article_id),
       description: i.description ?? `Artículo ${i.article_id}`,
     })),
+    provenance: branchProv,
+    isCurrent: branchProv.freshnessLevel === "CURRENT",
   };
 }
 
@@ -661,9 +743,15 @@ export async function queryReplenishment(
     status: string;
   }>;
   totalSuggested: number;
+  depotProvenance?: BranchProvenance;
+  isDepotCurrent?: boolean;
 }> {
   const scope = await resolveScope(branchId);
   const depotScope = await resolveScope(DEPOT_BRANCH_ID);
+  const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
+  const now = getServerTime();
+  const depotProv = await getBranchProvenance(DEPOT_BRANCH_ID, orgId, now);
+
   const planningDate = "2026-10-24"; // Next planning cycle Saturday
 
   const replenishment = await getWeeklyReplenishment({
@@ -678,6 +766,19 @@ export async function queryReplenishment(
   });
 
   const branchName = branchId === 2 ? "Centro" : branchId === 3 ? "Jardín" : `Sucursal ${branchId}`;
+
+  logInventoryAudit({
+    queryType: "REPLENISHMENT",
+    sources: {
+      deposito: {
+        status: depotProv.freshnessLevel,
+        sourceUpdatedAt: depotProv.lastUpdatedAt,
+        isCurrent: depotProv.freshnessLevel === "CURRENT",
+        originalFilename: depotProv.originalFilename,
+      },
+    },
+    queriedAt: now.toISOString(),
+  });
 
   return {
     branchName,
@@ -695,6 +796,8 @@ export async function queryReplenishment(
       status: row.status,
     })),
     totalSuggested: replenishment.total,
+    depotProvenance: depotProv,
+    isDepotCurrent: depotProv.freshnessLevel === "CURRENT",
   };
 }
 
