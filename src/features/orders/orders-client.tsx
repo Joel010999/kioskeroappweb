@@ -8,6 +8,7 @@ import {
   OperationsNavigation,
 } from "@/features/navigation/operations-navigation";
 import { downloadOrderExcel } from "@/features/excel/order-export";
+import { ExcelImportModal } from "./excel-import-modal";
 
 type Status =
   | "DRAFT"
@@ -109,6 +110,13 @@ async function api(path: string, init?: RequestInit) {
     throw new Error(result.error || "No pudimos completar la accion.");
   return result;
 }
+function nextSaturdayStr(): string {
+  const now = new Date();
+  const date = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  date.setUTCDate(date.getUTCDate() + ((6 - date.getUTCDay() + 7) % 7));
+  return date.toISOString().slice(0, 10);
+}
+
 function Header({
   active,
   branchId,
@@ -155,6 +163,7 @@ export function OrdersClient({
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [showImportExcelModal, setShowImportExcelModal] = useState(false);
   const selected = filters.find((item) => item.value === filter);
   const load = async () => {
     try {
@@ -225,9 +234,19 @@ export function OrdersClient({
           </p>
         </div>
         {!warehouse && (
-          <a className="order-primary" href="/replenishment">
-            + Nuevo pedido
-          </a>
+          <div style={{ display: "flex", gap: "0.6rem", alignItems: "center" }}>
+            <button
+              type="button"
+              className="order-secondary"
+              onClick={() => setShowImportExcelModal(true)}
+              style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
+            >
+              📥 Importar pedido desde Excel
+            </button>
+            <a className="order-primary" href="/replenishment">
+              + Nuevo pedido
+            </a>
+          </div>
         )}
       </section>
 
@@ -523,6 +542,17 @@ export function OrdersClient({
           )}
         </section>
       )}
+
+      {/* Excel Import Modal */}
+      <ExcelImportModal
+        isOpen={showImportExcelModal}
+        onClose={() => setShowImportExcelModal(false)}
+        branchId={branchId}
+        planningDate={planning || nextSaturdayStr()}
+        onOrderCreated={() => {
+          void load();
+        }}
+      />
     </main>
   );
 }

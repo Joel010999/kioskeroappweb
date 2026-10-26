@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { query } from "@/server/db/client";
 
 vi.mock("@/server/db/client", () => ({
@@ -36,6 +36,12 @@ describe("Auditoría Crítica de Inventario: Conexión en Tiempo Real de Depósi
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(mockNow);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe("1. Determinación de Fuente y Frescura en Tiempo Real para Depósito", () => {

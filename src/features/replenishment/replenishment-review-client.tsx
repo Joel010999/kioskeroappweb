@@ -13,6 +13,7 @@ import {
   type ReplenishmentExportItem,
 } from "@/features/excel/order-export";
 import { isSinRubro } from "@/server/catalog/rubros";
+import { ExcelImportModal } from "@/features/orders/excel-import-modal";
 
 type Status =
   | "SUGGESTION_AVAILABLE"
@@ -241,6 +242,7 @@ export function ReplenishmentReviewClient({
   const [error, setError] = useState<string | null>(null);
   const [authError, setAuthError] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showImportExcelModal, setShowImportExcelModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showRestoreAllModal, setShowRestoreAllModal] = useState(false);
   const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
@@ -1176,6 +1178,16 @@ export function ReplenishmentReviewClient({
             📥 Exportar a Excel
           </button>
 
+          {/* Excel Import Button */}
+          <button
+            type="button"
+            className="order-export-btn"
+            onClick={() => setShowImportExcelModal(true)}
+            title="Importar archivo Excel para generar pedido automáticamente"
+          >
+            📥 Importar pedido desde Excel
+          </button>
+
           {currentExistingOrder && (
             <Link
               className="order-primary"
@@ -1874,6 +1886,24 @@ export function ReplenishmentReviewClient({
           </div>
         </div>
       )}
+
+      {/* Excel Import Modal */}
+      <ExcelImportModal
+        isOpen={showImportExcelModal}
+        onClose={() => setShowImportExcelModal(false)}
+        branchId={Number(branchId)}
+        planningDate={planningDate}
+        onOrderCreated={(orderId, orderNumber) => {
+          setConfirmedOrder(orderNumber);
+          setConfirmedOrderId(orderId);
+          setExistingOrder({
+            id: orderId,
+            orderNumber,
+            branchId,
+            planningDate,
+          });
+        }}
+      />
     </main>
   );
 }

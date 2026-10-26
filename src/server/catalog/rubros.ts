@@ -13,6 +13,7 @@ export const CANONICAL_RUBROS = [
   "CHOCOLATES",
   "DESCARTABLES",
   "ENCENDIDOS",
+  "FIGURITAS",
   "GALLETITAS",
   "INSECTICIDA",
   "LIMPIEZA",
@@ -42,7 +43,7 @@ const PREFIX_MAP: Record<string, CanonicalRubro> = {
   "014": "BEBIDAS",
   "015": "PERFUMERIA",
   "016": "INSECTICIDA",
-  "017": "VARIOS",
+  "017": "FIGURITAS",
   "018": "LIMPIEZA",
   "019": "PEGAMENTOS",
   "020": "BEBIDAS",
@@ -130,7 +131,7 @@ export function resolveRubroName(
  */
 export const SQL_RUBRO_EXPRESSION = `
 CASE
-  WHEN p.payload->>'Rubro' IS NOT NULL AND btrim(p.payload->>'Rubro') <> '' AND UPPER(btrim(p.payload->>'Rubro')) IN ('ALMACEN', 'BEBIDAS', 'CARAMELOS', 'CIGARRILLOS', 'COPETIN', 'CHOCOLATES', 'DESCARTABLES', 'ENCENDIDOS', 'GALLETITAS', 'INSECTICIDA', 'LIMPIEZA', 'NAIPES', 'NAVIDEÑOS', 'PEGAMENTOS', 'PERFUMERIA', 'PILAS', 'TABACO Y AFINES', 'VARIOS')
+  WHEN p.payload->>'Rubro' IS NOT NULL AND btrim(p.payload->>'Rubro') <> '' AND UPPER(btrim(p.payload->>'Rubro')) IN ('ALMACEN', 'BEBIDAS', 'CARAMELOS', 'CIGARRILLOS', 'COPETIN', 'CHOCOLATES', 'DESCARTABLES', 'ENCENDIDOS', 'FIGURITAS', 'GALLETITAS', 'INSECTICIDA', 'LIMPIEZA', 'NAIPES', 'NAVIDEÑOS', 'PEGAMENTOS', 'PERFUMERIA', 'PILAS', 'TABACO Y AFINES', 'VARIOS')
     THEN UPPER(btrim(p.payload->>'Rubro'))
   WHEN p.payload->>'Clasificacion' LIKE '001%' OR p.payload->>'Clasificacion' LIKE '043%' THEN 'CIGARRILLOS'
   WHEN p.payload->>'Clasificacion' LIKE '004%' OR p.payload->>'Clasificacion' LIKE '007%' OR p.payload->>'Clasificacion' LIKE '023%' THEN 'PILAS'
@@ -142,6 +143,7 @@ CASE
   WHEN p.payload->>'Clasificacion' LIKE '014%' OR p.payload->>'Clasificacion' LIKE '020%' THEN 'BEBIDAS'
   WHEN p.payload->>'Clasificacion' LIKE '015%' OR p.payload->>'Clasificacion' LIKE '041%' THEN 'PERFUMERIA'
   WHEN p.payload->>'Clasificacion' LIKE '016%' THEN 'INSECTICIDA'
+  WHEN p.payload->>'Clasificacion' LIKE '017%' THEN 'FIGURITAS'
   WHEN p.payload->>'Clasificacion' LIKE '018%' THEN 'LIMPIEZA'
   WHEN p.payload->>'Clasificacion' LIKE '019%' THEN 'PEGAMENTOS'
   WHEN p.payload->>'Clasificacion' LIKE '022%' OR p.payload->>'Clasificacion' LIKE '026%' THEN 'TABACO Y AFINES'

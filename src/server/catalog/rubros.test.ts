@@ -18,6 +18,9 @@ describe("catalog/rubros", () => {
     expect(resolveRubroName("0050012")).toBe("COPETIN");
     expect(resolveRubroName("0150022")).toBe("PERFUMERIA");
     expect(resolveRubroName("0160252")).toBe("INSECTICIDA");
+    expect(resolveRubroName("0170012")).toBe("FIGURITAS");
+    expect(resolveRubroName("0170022")).toBe("FIGURITAS");
+    expect(resolveRubroName("0173632")).toBe("FIGURITAS");
     expect(resolveRubroName("0184352")).toBe("LIMPIEZA");
     expect(resolveRubroName("0190192")).toBe("PEGAMENTOS");
     expect(resolveRubroName("02023 2")).toBe("BEBIDAS");
@@ -30,6 +33,7 @@ describe("catalog/rubros", () => {
   it("preserves canonical rubro if already passed", () => {
     expect(resolveRubroName(null, "GALLETITAS")).toBe("GALLETITAS");
     expect(resolveRubroName("0014343", "CIGARRILLOS")).toBe("CIGARRILLOS");
+    expect(resolveRubroName(null, "FIGURITAS")).toBe("FIGURITAS");
   });
 
   it("handles empty or missing classification as Sin rubro", () => {
@@ -38,13 +42,14 @@ describe("catalog/rubros", () => {
     expect(resolveRubroName(undefined, undefined)).toBe("Sin rubro");
   });
 
-  it("contains all 18 canonical business categories", () => {
-    expect(CANONICAL_RUBROS).toHaveLength(18);
+  it("contains all 19 canonical business categories", () => {
+    expect(CANONICAL_RUBROS).toHaveLength(19);
     expect(CANONICAL_RUBROS).toContain("CIGARRILLOS");
     expect(CANONICAL_RUBROS).toContain("GALLETITAS");
     expect(CANONICAL_RUBROS).toContain("CHOCOLATES");
     expect(CANONICAL_RUBROS).toContain("ALMACEN");
     expect(CANONICAL_RUBROS).toContain("BEBIDAS");
+    expect(CANONICAL_RUBROS).toContain("FIGURITAS");
   });
 
   it("sorts rubros alphabetically A to Z and places Sin rubro at the end", () => {
