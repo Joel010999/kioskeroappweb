@@ -14,6 +14,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:migrate": "node scripts/migrate.mjs",
+    "staging:init": "node scripts/staging/init-staging.mjs --phase=all",
+    "staging:bootstrap": "node scripts/staging/init-staging.mjs --phase=bootstrap",
+    "staging:seed": "node scripts/staging/init-staging.mjs --phase=seed",
+    "staging:verify": "node scripts/staging/init-staging.mjs --phase=verify",
     "whatsapp:worker": "node scripts/whatsapp-daemon.mjs",
     "whatsapp:pair": "node scripts/whatsapp-pair.mjs"
   },
