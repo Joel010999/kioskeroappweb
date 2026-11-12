@@ -13,6 +13,7 @@ const navigationByRole: Record<NavigationRole, NavigationItem[]> = {
     { href: "/dashboard", label: "Resumen" },
     { href: "/orders", label: "Mis Pedidos" },
     { href: "/replenishment", label: "Reposición" },
+    { href: "/base-stock", label: "Stock base" },
     { href: "/supply-rules", label: "Abastecimiento" },
   ],
   WAREHOUSE: [
@@ -29,6 +30,7 @@ export function navigationForRole(role: NavigationRole): NavigationItem[] {
 export function isNavigationActive(pathname: string, href: string): boolean {
   if (href === "/dashboard") return pathname === href;
   if (href === "/replenishment") return pathname === href;
+  if (href === "/base-stock") return pathname === href;
   if (href === "/supply-rules") return pathname === href;
   if (href === "/orders")
     return pathname === "/orders" || /^\/orders\/\d+$/.test(pathname);

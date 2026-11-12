@@ -121,6 +121,57 @@ export function clearAllLastFulfilledContexts(): void {
   lastFulfilledContexts.clear();
 }
 
+export type PaginatedListKind =
+  | "STOCK_PRODUCT"
+  | "SUPPLIER_PRODUCTS"
+  | "INVENTORY_REPORT"
+  | "REPLENISHMENT";
+
+export type PaginatedListState = {
+  kind: PaginatedListKind;
+  items: unknown[];
+  pageSize: number;
+  currentPage: number;
+  meta: Record<string, unknown>;
+  createdAt: number;
+};
+
+const paginatedLists = new Map<string, PaginatedListState>();
+const PAGINATED_TTL_MS = 15 * 60 * 1000;
+
+export function setPaginatedList(
+  senderPhone: string,
+  state: Omit<PaginatedListState, "createdAt">
+): void {
+  const key = normalizePhoneNumber(senderPhone);
+  if (!key) return;
+  paginatedLists.set(key, {
+    ...state,
+    createdAt: Date.now(),
+  });
+}
+
+export function getPaginatedList(senderPhone: string): PaginatedListState | null {
+  const key = normalizePhoneNumber(senderPhone);
+  if (!key) return null;
+  const item = paginatedLists.get(key);
+  if (!item) return null;
+  if (Date.now() - item.createdAt > PAGINATED_TTL_MS) {
+    paginatedLists.delete(key);
+    return null;
+  }
+  return item;
+}
+
+export function clearPaginatedList(senderPhone: string): void {
+  const key = normalizePhoneNumber(senderPhone);
+  if (key) paginatedLists.delete(key);
+}
+
+export function clearAllPaginatedLists(): void {
+  paginatedLists.clear();
+}
+
 export type ClarificationResolutionResult =
   | { type: "RESOLVED"; intent: ParsedIntent }
   | { type: "CANCELLED"; message: string }
@@ -1174,6 +1225,44 @@ export function resolveContextualCorrection(
         rawText: text,
         slots: {
           ...last.slots,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        },
+        confidence: 0.95,
+      };
+    }
+  }
+
+  const isLastInventory =
+    last.intentType === "INVENTORY_REPORT" || last.intentType === "INVENTORY_EXCEL";
+
+  if (isLastInventory) {
+    if (isExcelSwitch && !initialIntent.slots.targetRubro && !initialIntent.slots.supplierCode) {
+      return {
+        type: "INVENTORY_EXCEL",
+        rawText: text,
+        slots: {
+          ...last.slots,
+          branchTarget:
+            branchInfo.target !== "ALL" ? branchInfo.target : last.slots.branchTarget,
+          branchId:
+            branchInfo.target !== "ALL" ? branchInfo.branchId : last.slots.branchId,
+          wantsExcel: true,
+          needsClarification: false,
+          clarificationMessage: undefined,
+        },
+        confidence: 0.95,
+      };
+    }
+
+    if (branchInfo.target !== "ALL" && isCorrectionPhrase) {
+      return {
+        type: last.intentType,
+        rawText: text,
+        slots: {
+          ...last.slots,
+          branchTarget: branchInfo.target,
+          branchId: branchInfo.branchId,
           needsClarification: false,
           clarificationMessage: undefined,
         },

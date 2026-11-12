@@ -54,16 +54,44 @@ export function weeklyDecision(input: {
   maxDemand: number;
   coverageDays?: number;
   isDiscrete?: boolean;
+  baseStock?: number | null;
+  pendingOrderQuantity?: number;
 }) {
   const coverageDays = input.coverageDays ?? REPLENISHMENT_COVERAGE_DAYS;
-  const targetStock = calculateTargetStock(input.medianDemand, coverageDays);
+  const demandTarget = calculateTargetStock(input.medianDemand, coverageDays);
 
   if (input.currentStock < 0) return { status: "NEGATIVE_STOCK" as const, targetStock: null, suggestedQuantity: null };
+
+  const effectiveStock = input.currentStock + Math.max(0, input.pendingOrderQuantity ?? 0);
+  const hasBaseStock = input.baseStock !== undefined && input.baseStock !== null;
+  const normalizedBase = hasBaseStock ? Math.max(0, input.baseStock as number) : null;
+
+  if (normalizedBase !== null) {
+    if (input.activeWeeks === 0 && normalizedBase === 0) {
+      return { status: "NO_DEMAND" as const, targetStock: 0, suggestedQuantity: 0 };
+    }
+
+    const irregular = input.activeWeeks >= 3 && isIrregularWeeklyDemand(input.medianDemand, input.maxDemand);
+    if (irregular && effectiveStock >= normalizedBase) {
+      return { status: "IRREGULAR_DEMAND" as const, targetStock: Math.max(demandTarget, normalizedBase), suggestedQuantity: null };
+    }
+
+    const trustedDemandTarget = input.activeWeeks >= 3 && !irregular ? demandTarget : 0;
+    const targetStock = Math.max(trustedDemandTarget, normalizedBase);
+    const rawSuggested = Math.max(0, targetStock - effectiveStock);
+    const suggestedQuantity = input.isDiscrete ? Math.ceil(rawSuggested) : rawSuggested;
+    return {
+      status: suggestedQuantity > 0 ? ("SUGGESTION_AVAILABLE" as const) : ("NO_SUGGESTION" as const),
+      targetStock,
+      suggestedQuantity,
+    };
+  }
+
   if (input.activeWeeks === 0) return { status: "NO_DEMAND" as const, targetStock: 0, suggestedQuantity: 0 };
   if (input.activeWeeks < 3) return { status: "INSUFFICIENT_HISTORY" as const, targetStock: null, suggestedQuantity: null };
-  if (isIrregularWeeklyDemand(input.medianDemand, input.maxDemand)) return { status: "IRREGULAR_DEMAND" as const, targetStock, suggestedQuantity: null };
+  if (isIrregularWeeklyDemand(input.medianDemand, input.maxDemand)) return { status: "IRREGULAR_DEMAND" as const, targetStock: demandTarget, suggestedQuantity: null };
 
-  const rawSuggested = Math.max(0, targetStock - input.currentStock);
+  const rawSuggested = Math.max(0, demandTarget - effectiveStock);
   const suggestedQuantity = input.isDiscrete ? Math.ceil(rawSuggested) : rawSuggested;
-  return { status: suggestedQuantity > 0 ? "SUGGESTION_AVAILABLE" as const : "NO_SUGGESTION" as const, targetStock, suggestedQuantity };
+  return { status: suggestedQuantity > 0 ? "SUGGESTION_AVAILABLE" as const : "NO_SUGGESTION" as const, targetStock: demandTarget, suggestedQuantity };
 }

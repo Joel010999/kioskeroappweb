@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { processIncomingMessage } from "./processor";
 import { clearMemoryDeduplicationCache } from "./deduplication";
-import { clearAllPendingClarifications } from "./context";
+import { clearAllPaginatedLists, clearAllPendingClarifications } from "./context";
 
 // Mock DB client to avoid network timeouts during unit tests
 vi.mock("@/server/db/client", () => ({
@@ -155,6 +155,21 @@ vi.mock("./queries", () => ({
     total_movements: 54000,
     freshness: { status: "OK", age_minutes: 15 },
   }),
+  queryCompleteInventory: vi.fn().mockResolvedValue({
+    branchTarget: "ALL",
+    branchName: "Centro, Jardín y Depósito",
+    total: 0,
+    items: [],
+    queriedAt: "2026-10-18T12:00:00.000Z",
+  }),
+  queryInventoryExcelData: vi.fn().mockResolvedValue({
+    branchTarget: "ALL",
+    branchName: "Centro, Jardín y Depósito",
+    total: 0,
+    items: [],
+    queriedAt: "2026-10-18T12:00:00.000Z",
+    excelBuffer: null,
+  }),
 }));
 
 describe("WhatsApp Message Processor Integration", () => {
@@ -169,6 +184,7 @@ describe("WhatsApp Message Processor Integration", () => {
   beforeEach(() => {
     clearMemoryDeduplicationCache();
     clearAllPendingClarifications();
+    clearAllPaginatedLists();
     sentReplies = [];
     vi.clearAllMocks();
   });

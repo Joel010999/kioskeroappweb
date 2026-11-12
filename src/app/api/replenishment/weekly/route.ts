@@ -26,12 +26,13 @@ export async function GET(request: Request) {
     if (!planningDate) throw new RequestValidationError("planning_date is required.");
     if (pageSize > 100) throw new RequestValidationError("page_size cannot exceed 100.");
     if (status && !(weeklyReplenishmentStatuses as readonly string[]).includes(status)) throw new RequestValidationError("status is not valid.");
-    const filters = ["WITH_SUGGESTION", "NO_SUGGESTION", "REVIEW_REQUIRED", "NO_DEMAND", "INSUFFICIENT_HISTORY", "IRREGULAR_DEMAND", "ZERO_STOCK", "NEGATIVE_STOCK", "DEPOT_POSITIVE", "DEPOT_ZERO", "DEPOT_NEGATIVE", "DEPOT_NO_ROW", "DEPOT_NOT_POSITIVE", "SUGGESTION_EXCEEDS_DEPOT", "SUPPLY_DEPOT", "SUPPLY_DIRECT_SUPPLIER", "SUPPLY_UNDEFINED", "TO_REPLENISH"] as const;
+    const filters = ["WITH_SUGGESTION", "NO_SUGGESTION", "REVIEW_REQUIRED", "NO_DEMAND", "INSUFFICIENT_HISTORY", "IRREGULAR_DEMAND", "ZERO_STOCK", "NEGATIVE_STOCK", "DEPOT_POSITIVE", "DEPOT_ZERO", "DEPOT_NEGATIVE", "DEPOT_NO_ROW", "DEPOT_NOT_POSITIVE", "SUGGESTION_EXCEEDS_DEPOT", "SUPPLY_DEPOT", "SUPPLY_DIRECT_SUPPLIER", "SUPPLY_UNDEFINED", "TO_REPLENISH", "INACTIVE"] as const;
     const sorts = ["SUGGESTED_DESC", "DEMAND_DESC", "STOCK_ASC", "DEPOT_GAP_DESC", "RUBRO_ASC"] as const;
     if (filter && !(filters as readonly string[]).includes(filter)) throw new RequestValidationError("filter is not valid.");
     if (sort && !(sorts as readonly string[]).includes(sort)) throw new RequestValidationError("sort is not valid.");
     const rubro = params.get("rubro")?.trim() || undefined;
     const supplier = params.get("supplier")?.trim() || undefined;
+    const includeInactive = params.get("include_inactive") === "true";
     const depotSourceId = await getSourceForBranch(scope.organizationId ?? context.organizationId, DEPOT_BRANCH_ID);
     const data = await getWeeklyReplenishment({
       scope,
@@ -43,6 +44,7 @@ export async function GET(request: Request) {
       sort: sort as WeeklyReplenishmentSort | undefined,
       rubro,
       supplier,
+      ...(includeInactive ? { includeInactive: true } : {}),
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });

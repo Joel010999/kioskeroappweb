@@ -5,6 +5,8 @@ export type IntentType =
   | "STOCK_LOW"
   | "STOCK_OUT_ALERT"
   | "DEPOSIT_AVAILABILITY"
+  | "INVENTORY_REPORT"
+  | "INVENTORY_EXCEL"
   | "REPLENISHMENT"
   | "REPLENISHMENT_EXCEL"
   | "ORDERS_RECENT"
@@ -54,6 +56,10 @@ export type ParsedSlots = {
   clarificationMessage?: string;
   disambiguationCandidates?: Array<{ id?: number; code?: string; label: string }>;
   pendingIntentType?: IntentType;
+  includeInactive?: boolean;
+  wantsAllResults?: boolean;
+  paginationAction?: "NEXT" | "PREV" | "ALL" | "PAGE";
+  requestedPage?: number;
 };
 
 export type ParsedIntent = {

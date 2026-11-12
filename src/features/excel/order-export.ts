@@ -570,3 +570,122 @@ export function downloadOrderExcel(params: {
   const name = params.filename || defaultFilename;
   xlsx.writeFile(wb, name);
 }
+
+export type InventoryExportItem = {
+  article_id: number;
+  description: string | null;
+  brand?: string | null;
+  rubro?: string | null;
+  supplier_code?: string | null;
+  supplier_name?: string | null;
+  is_active: boolean;
+  unit_measure?: string | null;
+  bulto?: string | null;
+  stock_centro: number | null;
+  stock_jardin: number | null;
+  stock_depot: number | null;
+  base_stock_centro?: number | null;
+  base_stock_jardin?: number | null;
+};
+
+export function buildInventoryWorkbook(params: {
+  items: InventoryExportItem[];
+  branchLabel: string;
+  scopeDescription: string;
+  generatedAt: string;
+}): xlsx.WorkBook {
+  const sorted = [...params.items].sort((a, b) =>
+    compareByRubroAndProduct(
+      {
+        rubro: resolveRubroName(null, a.rubro),
+        description: a.description,
+        article_id: a.article_id,
+      },
+      {
+        rubro: resolveRubroName(null, b.rubro),
+        description: b.description,
+        article_id: b.article_id,
+      },
+    ),
+  );
+
+  const aoa: any[][] = [
+    [`LA CASA DEL KIOSKERO - INVENTARIO COMPLETO (${params.branchLabel.toUpperCase()})`],
+    [
+      `Filtro: ${params.scopeDescription}`,
+      `Total artículos: ${sorted.length}`,
+      `Fecha consulta: ${params.generatedAt}`,
+    ],
+    [],
+    [
+      "Código",
+      "Descripción",
+      "Marca",
+      "Rubro",
+      "Proveedor",
+      "Estado",
+      "Presentación",
+      "Stock Centro",
+      "Stock Base Centro",
+      "Stock Jardín",
+      "Stock Base Jardín",
+      "Stock Depósito Central",
+    ],
+  ];
+
+  for (const item of sorted) {
+    const pres = resolveProductPresentation({
+      bulto: item.bulto,
+      unitMeasure: item.unit_measure,
+    });
+    const supplierDisp =
+      item.supplier_name && item.supplier_code
+        ? `${item.supplier_name} (${item.supplier_code})`
+        : item.supplier_code || item.supplier_name || "-";
+
+    aoa.push([
+      item.article_id,
+      item.description || `Artículo ${item.article_id}`,
+      item.brand || "-",
+      resolveRubroName(null, item.rubro),
+      supplierDisp,
+      item.is_active ? "Activo" : "Inactivo",
+      pres.displayText,
+      item.stock_centro ?? "-",
+      item.base_stock_centro ?? "-",
+      item.stock_jardin ?? "-",
+      item.base_stock_jardin ?? "-",
+      item.stock_depot ?? "-",
+    ]);
+  }
+
+  const ws = xlsx.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [
+    { wch: 10 },
+    { wch: 42 },
+    { wch: 18 },
+    { wch: 22 },
+    { wch: 24 },
+    { wch: 10 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 14 },
+    { wch: 16 },
+    { wch: 20 },
+  ];
+
+  const wb = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(wb, ws, "Inventario");
+  return wb;
+}
+
+export function generateInventoryExcelBuffer(params: {
+  items: InventoryExportItem[];
+  branchLabel: string;
+  scopeDescription: string;
+  generatedAt: string;
+}): Buffer {
+  const wb = buildInventoryWorkbook(params);
+  return xlsx.write(wb, { type: "buffer", bookType: "xlsx" });
+}

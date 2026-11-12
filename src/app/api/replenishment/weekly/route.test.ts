@@ -162,4 +162,20 @@ describe("GET /api/replenishment/weekly", () => {
       }),
     );
   });
+
+  it("supports INACTIVE filter and include_inactive flag", async () => {
+    getWeeklyReplenishment.mockResolvedValue({ items: [], total: 0 });
+    const response = await GET(
+      new Request(
+        "http://localhost/api/replenishment/weekly?branch_id=2&planning_date=2026-09-12&filter=INACTIVE&include_inactive=true",
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(getWeeklyReplenishment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: "INACTIVE",
+        includeInactive: true,
+      }),
+    );
+  });
 });

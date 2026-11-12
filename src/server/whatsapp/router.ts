@@ -559,6 +559,40 @@ export function extractProductSearch(
  * 17. Implicit product name search
  * 18. Unknown fallback
  */
+export function parsePaginationCommand(text: string): {
+  action: "NEXT" | "PREV" | "ALL" | "PAGE";
+  page?: number;
+} | null {
+  const clean = cleanText(text);
+  if (!clean) return null;
+
+  if (
+    /^(ver\s+mas|ver\s+siguiente|ver\s+siguientes|mas|mas\s+resultados|siguiente|siguientes|mostrar\s+mas|pagina\s+siguiente|otra\s+pagina|continuar|ver\s+el\s+resto)$/i.test(
+      clean
+    )
+  ) {
+    return { action: "NEXT" };
+  }
+  if (/^(anterior|pagina\s+anterior|ver\s+anterior|atras)$/i.test(clean)) {
+    return { action: "PREV" };
+  }
+  if (
+    /^(todos|ver\s+todos|mostrar\s+todos|todos\s+los\s+resultados|lista\s+completa|ver\s+todo|pasame\s+todos|mandame\s+todos)$/i.test(
+      clean
+    )
+  ) {
+    return { action: "ALL" };
+  }
+  const pageMatch = clean.match(/^(?:pagina|pag)\s*(\d+)$/i);
+  if (pageMatch) {
+    const pageNum = Number(pageMatch[1]);
+    if (Number.isSafeInteger(pageNum) && pageNum >= 1) {
+      return { action: "PAGE", page: pageNum };
+    }
+  }
+  return null;
+}
+
 export function parseUserMessage(text: string, referenceDate?: Date): ParsedIntent {
   const clean = cleanText(text);
   const branchInfo = extractBranch(text);
@@ -597,6 +631,8 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     supplierCode: resolvedSupplierCode,
     supplierName: resolvedSupplierName,
     supplierSearch: resolvedSupplierName || supplierInfo.candidate || undefined,
+    wantsAllResults: /\b(todos|todas|completo|completa|lista completa|sin limite)\b/.test(clean),
+    includeInactive: /\b(inactivo|inactivos|dados de baja|incluye inactivos)\b/.test(clean),
   };
 
   // 1. MENU NUMERIC SHORTCUTS (1, 2, 3, 4, 5)
@@ -707,13 +743,62 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     return { type: "ORDERS_RECENT", rawText: text, slots, confidence: 0.95 };
   }
 
-  // 8.5. REPOSICIÓN EN EXCEL (por rubro, por proveedor o general)
+  // 8.5. REPOSICIÓN EN EXCEL E INVENTARIO COMPLETO (por rubro, por proveedor, por sucursal o general)
   const mentionsExcelOrSheet =
     /\b(excel|planilla|archivo|xlsx|sheet|reporte|descargar|descargame|exportar|exportame|bajar|bajame)\b/.test(clean);
   const mentionsReplenish =
     /\b(reponer|reposicion|reposición|que hay que reponer|que reponer|sugerencias de reposicion|faltan pedirle|lo que falta pedirle|falta pedirle|tengo que pedirle|que tengo que pedirle|que tengo que pedir|productos que faltan pedirle|que pedir|que pedirle|falta pedir|falta pedirle|faltan pedir|faltan pedirle)\b/.test(clean);
   const mentionsAction =
     /\b(pasame|mandame|enviame|generame|armame|descargame|descargar|exportar|exportame|bajar|quiero|necesito|haceme)\b/.test(clean);
+
+  const mentionsExplicitInventory =
+    /\b(inventario|inventario completo|inventario general|stock completo|listado de stock|reporte de stock|planilla de stock|catalogo completo)\b/.test(
+      clean
+    ) ||
+    (/\b(todos los productos|todos los articulos)\b/.test(clean) && !mentionsReplenish);
+
+  if (mentionsExplicitInventory && !mentionsReplenish && !/\b(ventas|pedidos|fecha del excel)\b/.test(clean)) {
+    const invalidBranch = extractInvalidBranch(text);
+    if (invalidBranch) {
+      return {
+        type: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: mentionsExcelOrSheet,
+          needsClarification: true,
+          clarificationType: "BRANCH",
+          clarificationMessage: `No reconozco la sucursal *${invalidBranch}*. Podés consultar el inventario de *Centro*, *Jardín*, *Depósito Central* o *todas*.`,
+          pendingIntentType: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
+        },
+        confidence: 0.95,
+      };
+    }
+
+    if (mentionsExcelOrSheet) {
+      return {
+        type: "INVENTORY_EXCEL",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: true,
+          needsClarification: false,
+        },
+        confidence: 0.96,
+      };
+    }
+
+    return {
+      type: "INVENTORY_REPORT",
+      rawText: text,
+      slots: {
+        ...slots,
+        wantsExcel: false,
+        needsClarification: false,
+      },
+      confidence: 0.95,
+    };
+  }
 
   // Guard against queries that explicitly ask for other domains (sales, orders, stock) even if they mention excel
   const isExplicitNonReplenishmentExcel =

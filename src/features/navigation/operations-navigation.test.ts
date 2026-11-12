@@ -11,6 +11,7 @@ describe("operational navigation", () => {
     expect(links).toContain("/orders");
     expect(links).toContain("/supply-rules");
     expect(links).toContain("/replenishment");
+    expect(links).toContain("/base-stock");
     expect(links).not.toContain("/orders/warehouse");
     expect(links.every((href) => !href.startsWith("/api/"))).toBe(true);
     expect(links.every((href) => !href.includes("branch_id"))).toBe(true);
@@ -20,6 +21,7 @@ describe("operational navigation", () => {
     const links = navigationForRole("WAREHOUSE").map((item) => item.href);
     expect(links).toContain("/orders/warehouse");
     expect(links).not.toContain("/replenishment");
+    expect(links).not.toContain("/base-stock");
     expect(links).not.toContain("/supply-rules");
   });
 

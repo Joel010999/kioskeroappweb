@@ -1,4 +1,4 @@
-import type { ProductStockItem } from "./queries";
+import type { CompleteInventoryResult, InventoryReportItem, ProductStockItem } from "./queries";
 import type { BranchTarget } from "./types";
 import type { Order } from "@/server/orders/repository";
 import { formatRubroLabel } from "./router";
@@ -7,6 +7,73 @@ import {
   formatBuenosAiresDateTime,
   type BranchProvenance,
 } from "@/server/inventory/freshness";
+
+export const WHATSAPP_PAGE_SIZE = 10;
+
+export type PaginationOptions = {
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  showAll?: boolean;
+};
+
+export function splitWhatsAppMessage(text: string, maxLength = 3500): string[] {
+  if (text.length <= maxLength) return [text];
+  const chunks: string[] = [];
+  const paragraphs = text.split("\n\n");
+  let current = "";
+
+  const pushCurrent = () => {
+    if (current.trim()) {
+      chunks.push(current.trim());
+    }
+    current = "";
+  };
+
+  for (const para of paragraphs) {
+    if (para.length > maxLength) {
+      pushCurrent();
+      const lines = para.split("\n");
+      let lineBuf = "";
+      for (const line of lines) {
+        if ((lineBuf ? `${lineBuf}\n${line}` : line).length > maxLength) {
+          if (lineBuf.trim()) chunks.push(lineBuf.trim());
+          lineBuf = line;
+        } else {
+          lineBuf = lineBuf ? `${lineBuf}\n${line}` : line;
+        }
+      }
+      if (lineBuf.trim()) chunks.push(lineBuf.trim());
+      continue;
+    }
+
+    const candidate = current ? `${current}\n\n${para}` : para;
+    if (candidate.length > maxLength) {
+      pushCurrent();
+      current = para;
+    } else {
+      current = candidate;
+    }
+  }
+  pushCurrent();
+  return chunks.length > 0 ? chunks : [text];
+}
+
+function buildPaginationFooter(pagination?: PaginationOptions): string | null {
+  if (!pagination || pagination.showAll || pagination.totalCount <= pagination.pageSize) {
+    return null;
+  }
+  const start = (pagination.page - 1) * pagination.pageSize + 1;
+  const end = Math.min(pagination.totalCount, pagination.page * pagination.pageSize);
+  const totalPages = Math.ceil(pagination.totalCount / pagination.pageSize);
+  const parts = [
+    `Mostrando *${start}–${end}* de *${pagination.totalCount}* resultados (pág. ${pagination.page}/${totalPages}).`,
+  ];
+  if (end < pagination.totalCount) {
+    parts.push("Escribí *ver más* para seguir o *ver todos* para la lista completa.");
+  }
+  return `_${parts.join(" ")}_`;
+}
 
 function formatDate(iso: string | null | undefined): string {
   return formatBuenosAiresDate(iso);
@@ -48,7 +115,8 @@ export function formatStockQty(qty: number): string {
 export function formatStockResponse(
   data: { items: ProductStockItem[]; totalFound: number; queriedAt?: string },
   branchTarget: BranchTarget,
-  searchQuery?: string
+  searchQuery?: string,
+  pagination?: PaginationOptions
 ): string {
   if (data.items.length === 0) {
     if (searchQuery) {
@@ -147,7 +215,10 @@ export function formatStockResponse(
 
   lines.push("_Nota: Las cantidades reflejan los registros digitales del sistema al momento de la consulta. No confirman existencia física si ocurrieron ventas, traslados o mermas posteriores._");
 
-  if (data.totalFound > data.items.length) {
+  const pageFooter = buildPaginationFooter(pagination);
+  if (pageFooter) {
+    lines.push(`\n${pageFooter}`);
+  } else if (data.totalFound > data.items.length) {
     lines.push(`\n_Mostrando los primeros ${data.items.length} de ${data.totalFound} productos encontrados._`);
   } else if (data.items.length > 1 && data.items.length <= 5) {
     lines.push(`\n_Tip: Podés consultar el código exacto de una presentación (ej. 'art ${data.items[0].articleId}')._`);
@@ -218,7 +289,7 @@ export function formatReplenishmentResponse(data: {
   totalSuggested: number;
   depotProvenance?: BranchProvenance;
   isDepotCurrent?: boolean;
-}): string {
+}, pagination?: PaginationOptions): string {
   const targetLabel =
     data.rubro && (data.supplierName || data.supplierCode)
       ? ` — ${formatRubroLabel(data.rubro)} (${data.supplierName || `Proveedor ${data.supplierCode}`})`
@@ -263,7 +334,11 @@ export function formatReplenishmentResponse(data: {
   }
 
   lines.push("");
-  if (data.totalSuggested > data.items.length) {
+  const pageFooter = buildPaginationFooter(pagination);
+  if (pageFooter) {
+    lines.push(pageFooter);
+    lines.push(`💡 _También podés pedir: «Excel de reposición para ${data.branchName}»._\n`);
+  } else if (data.totalSuggested > data.items.length) {
     lines.push(`_Mostrando las primeras ${data.items.length} de ${data.totalSuggested} sugerencias._`);
     lines.push(`💡 _Para ver la lista completa con fórmulas de reposición, podés pedir: «Excel de reposición para ${data.branchName}»._\n`);
   }
@@ -423,20 +498,27 @@ export function formatSupplierProductsResponse(
     supplier_name: string | null;
     brand: string | null;
   }>,
-  supplierSearch: string
+  supplierSearch: string,
+  pagination?: PaginationOptions
 ): string {
   if (rows.length === 0) {
     return `🔍 No se encontraron productos asociados al proveedor *"${supplierSearch}"*.`;
   }
 
   const prov = rows[0]?.supplier_name || rows[0]?.supplier_code || supplierSearch;
-  const lines: string[] = [`🏢 *Productos del Proveedor ${prov}*\n`];
+  const totalCount = pagination?.totalCount ?? rows.length;
+  const lines: string[] = [`🏢 *Productos del Proveedor ${prov}* (${totalCount} artículos)\n`];
 
   for (const r of rows) {
     lines.push(`• *${r.description}* (Art. \`${r.article_id}\`)${r.brand ? ` — _${r.brand}_` : ""}`);
   }
 
-  lines.push(`\n_Mostrando ${rows.length} productos registrados._`);
+  const pageFooter = buildPaginationFooter(pagination);
+  if (pageFooter) {
+    lines.push(`\n${pageFooter}`);
+  } else {
+    lines.push(`\n_Mostrando ${rows.length} productos registrados._`);
+  }
   return lines.join("\n").trim();
 }
 
@@ -610,7 +692,7 @@ export function formatDepositAvailabilityResponse(data: {
   }>;
   depotProvenance?: BranchProvenance;
   isDepotCurrent?: boolean;
-}): string {
+}, pagination?: PaginationOptions): string {
   const rubroHeader = data.rubro ? ` (${formatRubroLabel(data.rubro)})` : "";
 
   // If depot is outdated or unverified:
@@ -863,4 +945,90 @@ export function formatReplenishmentExcelEmptyMessage(params: {
   }
 
   return text;
+}
+
+export function formatInventoryResponse(
+  data: CompleteInventoryResult,
+  itemsSlice: InventoryReportItem[],
+  pagination?: PaginationOptions
+): string {
+  const scopeParts: string[] = [];
+  if (data.rubro) scopeParts.push(formatRubroLabel(data.rubro));
+  if (data.supplierName || data.supplierCode) {
+    scopeParts.push(data.supplierName || `Proveedor ${data.supplierCode}`);
+  }
+  const scopeLabel = scopeParts.length > 0 ? ` — ${scopeParts.join(" · ")}` : "";
+
+  if (itemsSlice.length === 0) {
+    return (
+      `📦 *Inventario Completo${scopeLabel} (${data.branchName})*\n\n` +
+      `No se encontraron artículos para ese criterio en el catálogo.`
+    );
+  }
+
+  const lines: string[] = [
+    `📦 *Inventario Completo${scopeLabel} — ${data.branchName}*`,
+    `_Total encontrado:_ *${data.total}* artículos · _Consultado:_ ${formatBuenosAiresDateTime(data.queriedAt)}\n`,
+  ];
+
+  for (const item of itemsSlice) {
+    lines.push(
+      `*${item.description}* (Art. \`${item.articleId}\`)` +
+        `${item.rubro ? ` · _${item.rubro}_` : ""}` +
+        `${item.supplierCode ? ` · Prov. ${item.supplierCode}` : ""}`
+    );
+
+    const stockLineParts: string[] = [];
+    if (data.branchTarget === "ALL" || data.branchTarget === "CENTRO") {
+      const centroVal = item.stockCentro === null ? "s/reg." : `${formatStockQty(item.stockCentro)} u.`;
+      const baseNote = item.baseStockCentro !== null ? ` (Base: ${formatStockQty(item.baseStockCentro)})` : "";
+      stockLineParts.push(`Centro: *${centroVal}*${baseNote}`);
+    }
+    if (data.branchTarget === "ALL" || data.branchTarget === "JARDIN") {
+      const jardinVal = item.stockJardin === null ? "s/reg." : `${formatStockQty(item.stockJardin)} u.`;
+      const baseNote = item.baseStockJardin !== null ? ` (Base: ${formatStockQty(item.baseStockJardin)})` : "";
+      stockLineParts.push(`Jardín: *${jardinVal}*${baseNote}`);
+    }
+    if (data.branchTarget === "ALL" || data.branchTarget === "DEPOSITO") {
+      const depotVal = item.stockDepot === null ? "s/reg." : `${formatStockQty(item.stockDepot)} u.`;
+      stockLineParts.push(`Depósito: *${depotVal}*`);
+    }
+
+    lines.push(`  ${stockLineParts.join(" | ")}`);
+  }
+
+  lines.push("");
+  const pageFooter = buildPaginationFooter(pagination);
+  if (pageFooter) {
+    lines.push(pageFooter);
+  }
+  lines.push("💡 _Si querés descargar todo en planilla, pedime: «Excel de inventario ...»._");
+  return lines.join("\n").trim();
+}
+
+export function formatInventoryExcelCaption(data: CompleteInventoryResult): string {
+  const scopeParts: string[] = [];
+  if (data.rubro) scopeParts.push(formatRubroLabel(data.rubro));
+  if (data.supplierName || data.supplierCode) {
+    scopeParts.push(data.supplierName || `Proveedor ${data.supplierCode}`);
+  }
+  const scopeLabel = scopeParts.length > 0 ? scopeParts.join(" · ") : "Catálogo completo";
+
+  return [
+    `📦 *Planilla de Inventario — ${scopeLabel}*`,
+    `📍 *Sucursal(es):* ${data.branchName}`,
+    `📋 *Artículos incluidos:* ${data.total}`,
+    `🕒 *Consultado:* ${formatBuenosAiresDateTime(data.queriedAt)}`,
+    `_Incluye stock actual por sucursal, stock base configurado y estado del catálogo._`,
+  ].join("\n");
+}
+
+export function formatInventoryExcelEmptyMessage(data: CompleteInventoryResult): string {
+  const scopeParts: string[] = [];
+  if (data.rubro) scopeParts.push(formatRubroLabel(data.rubro));
+  if (data.supplierName || data.supplierCode) {
+    scopeParts.push(data.supplierName || `Proveedor ${data.supplierCode}`);
+  }
+  const scopeLabel = scopeParts.length > 0 ? ` de *${scopeParts.join(" · ")}*` : "";
+  return `ℹ️ *Inventario — ${data.branchName}*\n\nNo se encontraron artículos${scopeLabel} en el catálogo vigente.`;
 }

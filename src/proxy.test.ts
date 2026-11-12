@@ -7,6 +7,7 @@ describe("navigation proxy", () => {
     "/dashboard",
     "/replenishment",
     "/replenishment/review",
+    "/base-stock",
     "/orders",
     "/orders/warehouse",
     "/supply-rules",

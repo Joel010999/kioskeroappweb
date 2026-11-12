@@ -103,5 +103,97 @@ describe("weekly replenishment rules", () => {
     expect(decision.targetStock).toBeNull();
     expect(decision.suggestedQuantity).toBeNull();
   });
+
+  it("integrates stock base using max(demandTarget, baseStock) without double counting", () => {
+    // Low velocity product: 2 units/week -> 10d demand = 2.86, baseStock = 12 -> target = 12
+    const slowSeller = weeklyDecision({
+      currentStock: 3,
+      activeWeeks: 6,
+      medianDemand: 2,
+      maxDemand: 3,
+      isDiscrete: true,
+      baseStock: 12,
+    });
+    expect(slowSeller).toEqual({
+      status: "SUGGESTION_AVAILABLE",
+      targetStock: 12,
+      suggestedQuantity: 9,
+    });
+
+    // High velocity product: 21 units/week -> 10d demand = 30, baseStock = 12 -> demand wins (30)
+    const fastSeller = weeklyDecision({
+      currentStock: 5,
+      activeWeeks: 6,
+      medianDemand: 21,
+      maxDemand: 24,
+      isDiscrete: true,
+      baseStock: 12,
+    });
+    expect(fastSeller).toEqual({
+      status: "SUGGESTION_AVAILABLE",
+      targetStock: 30,
+      suggestedQuantity: 25,
+    });
+
+    // Pending orders reduce suggested quantity cleanly without double counting
+    const withPendingOrder = weeklyDecision({
+      currentStock: 3,
+      activeWeeks: 6,
+      medianDemand: 2,
+      maxDemand: 3,
+      isDiscrete: true,
+      baseStock: 12,
+      pendingOrderQuantity: 4,
+    });
+    expect(withPendingOrder).toEqual({
+      status: "SUGGESTION_AVAILABLE",
+      targetStock: 12,
+      suggestedQuantity: 5,
+    });
+  });
+
+  it("applies baseStock to new products with zero or <3 active weeks while holding negative stock", () => {
+    const newProductWithBase = weeklyDecision({
+      currentStock: 2,
+      activeWeeks: 0,
+      medianDemand: 0,
+      maxDemand: 0,
+      isDiscrete: true,
+      baseStock: 10,
+    });
+    expect(newProductWithBase).toEqual({
+      status: "SUGGESTION_AVAILABLE",
+      targetStock: 10,
+      suggestedQuantity: 8,
+    });
+
+    const explicitZeroBaseNoSales = weeklyDecision({
+      currentStock: 5,
+      activeWeeks: 0,
+      medianDemand: 0,
+      maxDemand: 0,
+      isDiscrete: true,
+      baseStock: 0,
+    });
+    expect(explicitZeroBaseNoSales).toEqual({
+      status: "NO_DEMAND",
+      targetStock: 0,
+      suggestedQuantity: 0,
+    });
+
+    const negativeEvenWithBase = weeklyDecision({
+      currentStock: -3,
+      activeWeeks: 6,
+      medianDemand: 2,
+      maxDemand: 3,
+      isDiscrete: true,
+      baseStock: 12,
+    });
+    expect(negativeEvenWithBase).toEqual({
+      status: "NEGATIVE_STOCK",
+      targetStock: null,
+      suggestedQuantity: null,
+    });
+  });
 });
 

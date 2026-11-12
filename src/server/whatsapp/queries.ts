@@ -5,12 +5,15 @@ import { getOrder, listOrders, listWarehouseOrders } from "@/server/orders/repos
 import { DEPOT_BRANCH_ID, getWeeklyReplenishment } from "@/server/analytics/weekly-replenishment";
 import { getSourceForBranch } from "@/server/auth/sources";
 import {
+  generateInventoryExcelBuffer,
   generateReplenishmentExcelBuffer,
   isEligibleForReplenishmentExcel,
+  type InventoryExportItem,
   type ReplenishmentExportItem,
   type NegativeStockExportItem,
 } from "@/features/excel/order-export";
-import { resolveRubroName } from "@/server/catalog/rubros";
+import { resolveRubroName, SQL_RUBRO_EXPRESSION } from "@/server/catalog/rubros";
+import { isUndefinedRelationError } from "@/server/catalog/history-cutoffs";
 import { calculateProductSimilarity, expandSearchToken, resolveKnownAlias } from "@/server/catalog/fuzzy-search";
 import { resolveSupplier } from "@/server/catalog/suppliers";
 import {
@@ -150,7 +153,7 @@ export async function queryProductStock(
          WHERE p.organization_id = $1 AND p.is_present = true
            AND ${andClauses.join(" AND ")}
          ORDER BY p.article_id, p.branch_id
-         LIMIT 5`,
+         LIMIT 250`,
         tokenValues
       );
 
@@ -189,7 +192,7 @@ export async function queryProductStock(
          WHERE p.organization_id = $1 AND p.is_present = true
            AND ${andAliasClauses.join(" AND ")}
          ORDER BY p.article_id, p.branch_id
-         LIMIT 5`,
+         LIMIT 250`,
         aliasValues
       );
 
@@ -218,7 +221,7 @@ export async function queryProductStock(
            AND ((COALESCE(p.payload->>'Marca', '') || ' ' || COALESCE(p.payload->>'Descripcion', '')) ILIKE $2
                 OR p.article_id::text ILIKE $2)
          ORDER BY p.article_id, p.branch_id
-         LIMIT 5`,
+         LIMIT 250`,
         [orgId, `%${rawSearch}%`]
       );
       if (directRes.rows.length > 0) {
@@ -262,7 +265,7 @@ export async function queryProductStock(
            FROM products_raw p
            WHERE p.organization_id = $1 AND p.is_present = true
              AND (${orClauses.join(" OR ")})
-           LIMIT 50`,
+           LIMIT 250`,
           tokenValues
         );
 
@@ -276,7 +279,7 @@ export async function queryProductStock(
             .sort((a, b) => b.match.score - a.match.score);
 
           if (scored.length > 0) {
-            productsRes = { rows: scored.slice(0, 5).map((s) => s.product) };
+            productsRes = { rows: scored.slice(0, 100).map((s) => s.product) };
           }
         }
       }
@@ -761,7 +764,7 @@ export async function queryReplenishment(
     rubro: targetRubro,
     supplier: targetSupplierCode,
     filter: "TO_REPLENISH",
-    limit: 10,
+    limit: 200,
     offset: 0,
   });
 
@@ -1109,17 +1112,388 @@ export async function querySupplierProducts(supplierSearch: string) {
        p.article_id,
        COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
        p.payload->>'Proveedor' AS supplier_code,
-       COALESCE(s.name, $2) AS supplier_name,
-       p.payload->>'Marca' AS brand
+       s.name AS supplier_name,
+       p.payload->>'Marca' AS brand,
+       p.payload->>'Rubro' AS rubro,
+       COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1' AS is_active
      FROM products_raw p
      LEFT JOIN suppliers s ON s.external_code = btrim(p.payload->>'Proveedor') AND s.organization_id = p.organization_id
      WHERE p.organization_id = $1 AND p.is_present = true
+       AND COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1'
        AND ${whereSupplier}
-     LIMIT 10`,
+     ORDER BY p.article_id, p.branch_id
+     LIMIT 250`,
     values
   );
 
   return res.rows;
+}
+
+export type InventoryReportItem = {
+  articleId: number;
+  description: string;
+  brand?: string;
+  rubro: string;
+  supplierCode?: string;
+  supplierName?: string;
+  isActive: boolean;
+  unitMeasure?: string;
+  bulto?: string;
+  stockCentro: number | null;
+  stockJardin: number | null;
+  stockDepot: number | null;
+  baseStockCentro: number | null;
+  baseStockJardin: number | null;
+};
+
+export type CompleteInventoryResult = {
+  branchTarget: BranchTarget;
+  branchName: string;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
+  total: number;
+  items: InventoryReportItem[];
+  queriedAt: string;
+  centroProvenance?: BranchProvenance;
+  jardinProvenance?: BranchProvenance;
+  depotProvenance?: BranchProvenance;
+};
+
+function buildCompleteInventorySql(options: {
+  whereClauses: string[];
+  includeBaseStock: boolean;
+  limitParam: string;
+}): string {
+  const baseStockCte = options.includeBaseStock
+    ? `base_stock_agg AS (
+      SELECT article_id,
+        MAX(CASE WHEN branch_id = 2 THEN base_stock END) AS base_stock_centro,
+        MAX(CASE WHEN branch_id = 3 THEN base_stock END) AS base_stock_jardin
+      FROM branch_product_base_stock
+      WHERE organization_id = $1
+      GROUP BY article_id
+    )`
+    : `base_stock_agg AS (
+      SELECT NULL::integer AS article_id, NULL::numeric AS base_stock_centro, NULL::numeric AS base_stock_jardin WHERE false
+    )`;
+
+  return `
+    WITH catalog AS (
+      SELECT DISTINCT ON (p.article_id)
+        p.article_id,
+        COALESCE(p.payload->>'Descripcion', p.payload->>'ArticuloDesc', 'Artículo ' || p.article_id) AS description,
+        p.payload->>'Marca' AS brand,
+        ${SQL_RUBRO_EXPRESSION} AS rubro,
+        NULLIF(btrim(p.payload->>'Proveedor'), '') AS supplier_code,
+        p.payload->>'UnidadMedida' AS unit_measure,
+        p.payload->>'Bulto' AS bulto,
+        COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1' AS is_active
+      FROM products_raw p
+      WHERE ${options.whereClauses.join(" AND ")}
+      ORDER BY p.article_id, p.is_present DESC, p.branch_id ASC
+    ),
+    stock_agg AS (
+      SELECT
+        sl.article_id,
+        MAX(CASE WHEN sl.branch_id = 2 THEN sl.saldo END) AS stock_centro_single,
+        SUM(CASE WHEN sl.branch_id = 2 THEN sl.saldo ELSE 0 END) AS stock_centro_sum,
+        COUNT(*) FILTER (WHERE sl.branch_id = 2) AS has_centro,
+        SUM(CASE WHEN sl.branch_id = 3 THEN sl.saldo ELSE 0 END) AS stock_jardin_sum,
+        COUNT(*) FILTER (WHERE sl.branch_id = 3) AS has_jardin,
+        SUM(CASE WHEN sl.branch_id = 1 THEN sl.saldo ELSE 0 END) AS stock_depot_sum,
+        COUNT(*) FILTER (WHERE sl.branch_id = 1) AS has_depot
+      FROM stock_levels_raw sl
+      WHERE sl.organization_id = $1
+      GROUP BY sl.article_id
+    ),
+    ${baseStockCte}
+    SELECT
+      c.article_id,
+      c.description,
+      c.brand,
+      c.rubro,
+      c.supplier_code,
+      s.name AS supplier_name,
+      c.unit_measure,
+      c.bulto,
+      c.is_active,
+      CASE WHEN COALESCE(sa.has_centro, 0) > 0 THEN sa.stock_centro_sum ELSE NULL END AS stock_centro,
+      CASE WHEN COALESCE(sa.has_jardin, 0) > 0 THEN sa.stock_jardin_sum ELSE NULL END AS stock_jardin,
+      CASE WHEN COALESCE(sa.has_depot, 0) > 0 THEN sa.stock_depot_sum ELSE NULL END AS stock_depot,
+      bs.base_stock_centro,
+      bs.base_stock_jardin
+    FROM catalog c
+    LEFT JOIN stock_agg sa ON sa.article_id = c.article_id
+    LEFT JOIN base_stock_agg bs ON bs.article_id = c.article_id
+    LEFT JOIN suppliers s ON s.organization_id = $1 AND s.external_code = c.supplier_code
+    ORDER BY c.rubro ASC, c.description ASC, c.article_id ASC
+    LIMIT ${options.limitParam}
+  `;
+}
+
+/**
+ * Queries full inventory across Centro, Jardín, and/or Depósito Central,
+ * supporting filtering by rubro, supplier (code or name/brand), and active status.
+ */
+export async function queryCompleteInventory(options: {
+  branchTarget?: BranchTarget;
+  branchId?: number;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
+  supplierSearch?: string;
+  includeInactive?: boolean;
+  limit?: number;
+}): Promise<CompleteInventoryResult> {
+  const orgId = Number(process.env.DASHBOARD_ORGANIZATION_ID || DEFAULT_ORG_ID);
+  const now = getServerTime();
+  const branchTarget: BranchTarget =
+    options.branchTarget ??
+    (options.branchId === 1
+      ? "DEPOSITO"
+      : options.branchId === 2
+      ? "CENTRO"
+      : options.branchId === 3
+      ? "JARDIN"
+      : "ALL");
+  const branchName =
+    branchTarget === "CENTRO"
+      ? "Centro"
+      : branchTarget === "JARDIN"
+      ? "Jardín"
+      : branchTarget === "DEPOSITO"
+      ? "Depósito Central"
+      : "Centro, Jardín y Depósito";
+
+  const whereClauses: string[] = ["p.organization_id = $1", "p.is_present = true"];
+  const values: unknown[] = [orgId];
+
+  if (!options.includeInactive) {
+    whereClauses.push("COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1'");
+  }
+
+  if (options.branchId === 2 || options.branchId === 3) {
+    values.push(options.branchId);
+    whereClauses.push(`p.branch_id = $${values.length}`);
+  }
+
+  if (options.rubro) {
+    if (options.rubro === "__SIN_RUBRO__" || options.rubro === "SIN RUBRO") {
+      whereClauses.push(`(${SQL_RUBRO_EXPRESSION} = 'Sin rubro')`);
+    } else {
+      values.push(options.rubro);
+      const rIdx = values.length;
+      values.push(`%${options.rubro}%`);
+      const rLikeIdx = values.length;
+      whereClauses.push(
+        `(${SQL_RUBRO_EXPRESSION} ILIKE $${rLikeIdx} OR ${SQL_RUBRO_EXPRESSION} = $${rIdx} OR p.payload->>'Rubro' ILIKE $${rLikeIdx} OR p.payload->>'Clasificacion' ILIKE $${rLikeIdx})`
+      );
+    }
+  }
+
+  const effectiveSupplierSearch = options.supplierCode || options.supplierName || options.supplierSearch;
+  let resolvedCode = options.supplierCode;
+  let resolvedName = options.supplierName;
+  if (!resolvedCode && effectiveSupplierSearch) {
+    const resolved = resolveSupplier(effectiveSupplierSearch);
+    if (resolved.status === "EXACT") {
+      resolvedCode = resolved.supplier.code;
+      resolvedName = resolved.supplier.name;
+    } else if (/^\d+$/.test(effectiveSupplierSearch.trim())) {
+      resolvedCode = effectiveSupplierSearch.trim();
+    }
+  }
+
+  if (resolvedCode) {
+    values.push(resolvedCode);
+    whereClauses.push(`btrim(p.payload->>'Proveedor') = $${values.length}`);
+  } else if (effectiveSupplierSearch) {
+    values.push(`%${effectiveSupplierSearch}%`);
+    const sIdx = values.length;
+    whereClauses.push(
+      `(btrim(p.payload->>'Proveedor') ILIKE $${sIdx} OR p.payload->>'Marca' ILIKE $${sIdx} OR EXISTS (
+        SELECT 1 FROM suppliers sup
+        WHERE sup.organization_id = p.organization_id
+          AND sup.external_code = btrim(p.payload->>'Proveedor')
+          AND sup.name ILIKE $${sIdx}
+      ))`
+    );
+  }
+
+  const maxRows = options.limit ?? 5000;
+  values.push(maxRows);
+  const limitParam = `$${values.length}`;
+
+  type InventorySqlRow = {
+    article_id: number;
+    description: string;
+    brand: string | null;
+    rubro: string;
+    supplier_code: string | null;
+    supplier_name: string | null;
+    unit_measure: string | null;
+    bulto: string | null;
+    is_active: boolean;
+    stock_centro: string | null;
+    stock_jardin: string | null;
+    stock_depot: string | null;
+    base_stock_centro: string | null;
+    base_stock_jardin: string | null;
+  };
+
+  let res: { rows: InventorySqlRow[] };
+  try {
+    res = await query<InventorySqlRow>(
+      buildCompleteInventorySql({ whereClauses, includeBaseStock: true, limitParam }),
+      values
+    );
+  } catch (error) {
+    if (!isUndefinedRelationError(error)) {
+      throw error;
+    }
+    res = await query<InventorySqlRow>(
+      buildCompleteInventorySql({ whereClauses, includeBaseStock: false, limitParam }),
+      values
+    );
+  }
+
+  const branchesProv = await getAllBranchesProvenance(orgId, now);
+
+  logInventoryAudit({
+    queryType: "COMPLETE_INVENTORY",
+    searchQuery: [options.rubro, resolvedCode || effectiveSupplierSearch].filter(Boolean).join(" | "),
+    articleIds: res.rows.slice(0, 50).map((r) => r.article_id),
+    sources: {
+      centro: {
+        status: branchesProv[2].freshnessLevel,
+        sourceUpdatedAt: branchesProv[2].lastUpdatedAt,
+        isCurrent: branchesProv[2].freshnessLevel === "CURRENT",
+      },
+      jardin: {
+        status: branchesProv[3].freshnessLevel,
+        sourceUpdatedAt: branchesProv[3].lastUpdatedAt,
+        isCurrent: branchesProv[3].freshnessLevel === "CURRENT",
+      },
+      deposito: {
+        status: branchesProv[1].freshnessLevel,
+        sourceUpdatedAt: branchesProv[1].lastUpdatedAt,
+        isCurrent: branchesProv[1].freshnessLevel === "CURRENT",
+        originalFilename: branchesProv[1].originalFilename,
+      },
+    },
+    queriedAt: now.toISOString(),
+  });
+
+  const items: InventoryReportItem[] = res.rows.map((r) => ({
+    articleId: r.article_id,
+    description: r.description,
+    brand: r.brand ?? undefined,
+    rubro: r.rubro || "Sin rubro",
+    supplierCode: r.supplier_code ?? undefined,
+    supplierName: r.supplier_name ?? resolvedName ?? undefined,
+    isActive: Boolean(r.is_active),
+    unitMeasure: r.unit_measure ?? undefined,
+    bulto: r.bulto ?? undefined,
+    stockCentro:
+      branchTarget === "JARDIN" || branchTarget === "DEPOSITO"
+        ? null
+        : r.stock_centro === null
+        ? null
+        : Number(r.stock_centro),
+    stockJardin:
+      branchTarget === "CENTRO" || branchTarget === "DEPOSITO"
+        ? null
+        : r.stock_jardin === null
+        ? null
+        : Number(r.stock_jardin),
+    stockDepot:
+      branchTarget === "CENTRO" || branchTarget === "JARDIN"
+        ? null
+        : r.stock_depot === null
+        ? null
+        : Number(r.stock_depot),
+    baseStockCentro:
+      branchTarget === "JARDIN" || branchTarget === "DEPOSITO"
+        ? null
+        : r.base_stock_centro === null
+        ? null
+        : Number(r.base_stock_centro),
+    baseStockJardin:
+      branchTarget === "CENTRO" || branchTarget === "DEPOSITO"
+        ? null
+        : r.base_stock_jardin === null
+        ? null
+        : Number(r.base_stock_jardin),
+  }));
+
+  return {
+    branchTarget,
+    branchName,
+    rubro: options.rubro,
+    supplierCode: resolvedCode,
+    supplierName: resolvedName || items[0]?.supplierName,
+    total: items.length,
+    items,
+    queriedAt: now.toISOString(),
+    centroProvenance: branchesProv[2],
+    jardinProvenance: branchesProv[3],
+    depotProvenance: branchesProv[1],
+  };
+}
+
+export async function queryInventoryExcelData(options: {
+  branchTarget?: BranchTarget;
+  branchId?: number;
+  rubro?: string;
+  supplierCode?: string;
+  supplierName?: string;
+  supplierSearch?: string;
+  includeInactive?: boolean;
+}) {
+  const report = await queryCompleteInventory({ ...options, limit: 5000 });
+  if (report.items.length === 0) {
+    return {
+      ...report,
+      excelBuffer: null as Buffer | null,
+    };
+  }
+
+  const scopeParts: string[] = [];
+  if (report.rubro) scopeParts.push(`Rubro: ${report.rubro}`);
+  if (report.supplierName || report.supplierCode) {
+    scopeParts.push(`Proveedor: ${report.supplierName || report.supplierCode}`);
+  }
+  const scopeDescription = scopeParts.length > 0 ? scopeParts.join(" · ") : "Catálogo completo";
+
+  const exportItems: InventoryExportItem[] = report.items.map((item) => ({
+    article_id: item.articleId,
+    description: item.description,
+    brand: item.brand,
+    rubro: item.rubro,
+    supplier_code: item.supplierCode,
+    supplier_name: item.supplierName,
+    is_active: item.isActive,
+    unit_measure: item.unitMeasure,
+    bulto: item.bulto,
+    stock_centro: item.stockCentro,
+    stock_jardin: item.stockJardin,
+    stock_depot: item.stockDepot,
+    base_stock_centro: item.baseStockCentro,
+    base_stock_jardin: item.baseStockJardin,
+  }));
+
+  const excelBuffer = generateInventoryExcelBuffer({
+    items: exportItems,
+    branchLabel: report.branchName,
+    scopeDescription,
+    generatedAt: report.queriedAt,
+  });
+
+  return {
+    ...report,
+    excelBuffer,
+  };
 }
 
 /**

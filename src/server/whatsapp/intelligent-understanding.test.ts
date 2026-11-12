@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseUserMessage } from "./router";
 import {
   clearAllLastFulfilledContexts,
+  clearAllPaginatedLists,
   clearAllPendingClarifications,
   getPendingClarification,
   resolvePendingClarification,
@@ -123,6 +124,21 @@ vi.mock("./queries", () => ({
     total_movements: 5000,
     freshness: { status: "OK", age_minutes: 15 },
   }),
+  queryCompleteInventory: vi.fn().mockResolvedValue({
+    branchTarget: "ALL",
+    branchName: "Centro, Jardín y Depósito",
+    total: 0,
+    items: [],
+    queriedAt: "2026-10-18T12:00:00.000Z",
+  }),
+  queryInventoryExcelData: vi.fn().mockResolvedValue({
+    branchTarget: "ALL",
+    branchName: "Centro, Jardín y Depósito",
+    total: 0,
+    items: [],
+    queriedAt: "2026-10-18T12:00:00.000Z",
+    excelBuffer: null,
+  }),
 }));
 
 describe("Renderbyte — Evolución Inteligente del Bot de WhatsApp", () => {
@@ -132,6 +148,7 @@ describe("Renderbyte — Evolución Inteligente del Bot de WhatsApp", () => {
   beforeEach(() => {
     clearAllPendingClarifications();
     clearAllLastFulfilledContexts();
+    clearAllPaginatedLists();
     clearMemoryDeduplicationCache();
   });
 

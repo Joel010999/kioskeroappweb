@@ -203,6 +203,19 @@ export function DashboardClient({ branchName, warehouse }: { branchName: string;
                 <span className="action-card-btn">Configurar Rutas <Icon name="arrow" size={14} /></span>
               </div>
             </a>
+            <a className="action-card action-card-quaternary" href="/base-stock">
+              <div className="action-card-top">
+                <span className="action-card-tag">Exhibición en góndola</span>
+                <span className="action-card-icon"><Icon name="box" size={20} /></span>
+              </div>
+              <div className="action-card-body">
+                <h3>Stock Base por Sucursal</h3>
+                <p>Fijar el stock mínimo de exhibición por artículo y sucursal (Centro o Jardín) sin reemplazar las estadísticas.</p>
+              </div>
+              <div className="action-card-footer">
+                <span className="action-card-btn">Configurar Stock Base <Icon name="arrow" size={14} /></span>
+              </div>
+            </a>
           </>
         )}
       </div>

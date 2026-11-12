@@ -41,7 +41,8 @@ type Filter =
   | "SUPPLY_DEPOT"
   | "SUPPLY_DIRECT_SUPPLIER"
   | "SUPPLY_UNDEFINED"
-  | "TO_REPLENISH";
+  | "TO_REPLENISH"
+  | "INACTIVE";
 type Sort =
   | "SUGGESTED_DESC"
   | "DEMAND_DESC"
@@ -64,11 +65,15 @@ type Item = {
   package_units?: number | null;
   presentation?: string | null;
   presentation_display?: string | null;
+  is_active?: boolean;
   stock_current: number;
   stock_depot: number | null;
   depot_stock_state: DepotState;
   supply_mode: SupplyMode;
   weekly_demand: number | null;
+  base_stock?: number | null;
+  pending_order_quantity?: number;
+  history_cutoff_date?: string | null;
   target_stock: number | null;
   suggested_quantity: number | null;
   requested_quantity: number;
@@ -125,14 +130,9 @@ const depotLabel: Record<DepotState, string> = {
   DEPOT_STOCK_NEGATIVE: "Stock negativo",
   DEPOT_NO_ROW: "Sin registro",
 };
-const supplyLabel: Record<SupplyMode, string> = {
-  DEPOT: "DEPÓSITO",
-  DIRECT_SUPPLIER: "PROVEEDOR DIRECTO",
-  UNDEFINED: "SIN DEFINIR",
-};
 const quickFilters: Array<[Filter, string]> = [
   ["", "Todos"],
-  ["TO_REPLENISH", "A reponer"],
+  ["TO_REPLENISH", "A reponer (incl. negativos)"],
   ["WITH_SUGGESTION", "Con sugerencia"],
   ["REVIEW_REQUIRED", "Revisión manual"],
   ["NEGATIVE_STOCK", "Stock negativo"],
@@ -141,12 +141,12 @@ const quickFilters: Array<[Filter, string]> = [
   ["SUGGESTION_EXCEEDS_DEPOT", "Sugerida > depósito"],
 ];
 const filters: Array<[Filter, string]> = [
-  ["", "Todos"],
-  ["TO_REPLENISH", "A reponer en depósito (Recomendado)"],
-  ["WITH_SUGGESTION", "Con sugerencia"],
-  ["NO_SUGGESTION", "Sin sugerencia"],
+  ["", "Todos los activos"],
+  ["TO_REPLENISH", "A reponer (con sugerencia o stock negativo)"],
+  ["WITH_SUGGESTION", "Solo con sugerencia calculada"],
+  ["NO_SUGGESTION", "Sin sugerencia (stock cubierto)"],
   ["REVIEW_REQUIRED", "Revisión manual"],
-  ["NO_DEMAND", "Sin demanda"],
+  ["NO_DEMAND", "Sin demanda reciente"],
   ["INSUFFICIENT_HISTORY", "Historial insuficiente"],
   ["IRREGULAR_DEMAND", "Demanda irregular"],
   ["NEGATIVE_STOCK", "Saldo PV negativo"],
@@ -156,9 +156,7 @@ const filters: Array<[Filter, string]> = [
   ["DEPOT_NO_ROW", "Depósito sin registro"],
   ["DEPOT_NOT_POSITIVE", "Depósito sin stock"],
   ["SUGGESTION_EXCEEDS_DEPOT", "Sugerida > stock depósito"],
-  ["SUPPLY_DEPOT", "Abastecimiento: depósito"],
-  ["SUPPLY_DIRECT_SUPPLIER", "Abastecimiento: proveedor directo"],
-  ["SUPPLY_UNDEFINED", "Abastecimiento: sin definir"],
+  ["INACTIVE", "Artículos inactivos (Estado ≠ 1)"],
 ];
 
 function nextSaturday() {
@@ -1283,8 +1281,11 @@ export function ReplenishmentReviewClient({
             {globalEditedCount
               ? `${globalEditedCount} cantidades modificadas manualmente. `
               : ""}
-            Solo los artículos con abastecimiento DEPÓSITO generan una solicitud
-            interna.
+            El cálculo combina demanda de 10 días y{" "}
+            <Link className="order-link" href="/base-stock">
+              Stock base por sucursal
+            </Link>
+            , descontando stock actual y pedidos en curso.
           </span>
         </section>
       )}
@@ -1375,7 +1376,6 @@ export function ReplenishmentReviewClient({
                   <th>Producto</th>
                   <th>Presentación</th>
                   <th>Rubro</th>
-                  <th>Abastecimiento</th>
                   <th>Clasificación</th>
                   <th>Stock {branchName === "Centro" ? "Central" : branchName}</th>
                   <th>Demanda semanal</th>
@@ -1433,6 +1433,11 @@ export function ReplenishmentReviewClient({
                           >
                             📦 {item.presentation_display || "Unidad"}
                           </span>
+                          {item.history_cutoff_date && (
+                            <span className="cutoff-inline-badge">
+                              Historial desde {item.history_cutoff_date}
+                            </span>
+                          )}
                         </div>
                         {isNegativeStock && (
                           <div
@@ -1462,13 +1467,6 @@ export function ReplenishmentReviewClient({
                           {item.rubro || "Sin rubro"}
                         </span>
                       </td>
-                      <td data-label="Abastecimiento">
-                        <span
-                          className={`supply-pill ${item.supply_mode.toLowerCase()}`}
-                        >
-                          {supplyLabel[item.supply_mode]}
-                        </span>
-                      </td>
                       <td data-label="Clasificación">
                         <code>{item.classification_code || "-"}</code>
                       </td>
@@ -1481,6 +1479,12 @@ export function ReplenishmentReviewClient({
                         }
                       >
                         {units.format(item.stock_current)}
+                        {item.pending_order_quantity !== undefined &&
+                          item.pending_order_quantity > 0 && (
+                            <small className="pending-order-note">
+                              + {units.format(item.pending_order_quantity)} en pedido
+                            </small>
+                          )}
                         {isNegativeStock && (
                           <small
                             className="negative-stock-pill"
@@ -1499,6 +1503,12 @@ export function ReplenishmentReviewClient({
                         {item.target_stock === null
                           ? "-"
                           : units.format(item.target_stock)}
+                        {item.base_stock !== null &&
+                          item.base_stock !== undefined && (
+                            <small className="base-stock-inline-note">
+                              Base mín.: {units.format(item.base_stock)}
+                            </small>
+                          )}
                       </td>
                       <td data-label="Sugerida" className="review-suggested">
                         {item.suggested_quantity === null ? (

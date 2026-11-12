@@ -1,5 +1,6 @@
 import { query } from "@/server/db/client";
 import type { Scope } from "@/server/analytics/types";
+import { isUndefinedRelationError } from "@/server/catalog/history-cutoffs";
 import type { SuggestionConfidence, SuggestionStatus } from "./demand-rules";
 
 export { suggestionConfidences, suggestionStatuses } from "./demand-rules";
@@ -20,26 +21,28 @@ function numeric(value: string | number | null): number | null {
   return value === null ? null : Number(value);
 }
 
-export async function getSuggestions(
-  scope: Scope,
-  options: { search?: string; status?: SuggestionStatus; confidence?: SuggestionConfidence; articleIds?: number[]; limit: number; offset: number },
-) {
-  const values: unknown[] = [...scopeValues(scope), options.search ? `%${options.search}%` : null, options.status ?? null, options.confidence ?? null, options.articleIds?.length ? options.articleIds : null];
-  const limitParameter = `$${values.push(options.limit)}`;
-  const offsetParameter = `$${values.push(options.offset)}`;
-  const result = await query<{
-    article_id: number; product_name: string | null; monthly_demand: string | null; monthly_history: Array<number | string | null>;
-    stock_target: string | null; current_stock: string; suggested_quantity: string | null; confidence: SuggestionConfidence;
-    status: SuggestionStatus; history_months: string; max_monthly_demand: string | null; total_rows: string;
-  }>(`
+function buildSuggestionsSql(includeCutoffsTable: boolean, limitParameter: string, offsetParameter: string) {
+  const cutoffJoin = includeCutoffsTable
+    ? `LEFT JOIN branch_product_history_cutoffs hc
+         ON hc.organization_id = m.organization_id
+        AND hc.branch_id = m.branch_id
+        AND hc.article_id = (CASE WHEN btrim(m.idarti) ~ '^[0-9]+$' THEN btrim(m.idarti)::integer ELSE NULL END)`
+    : "";
+  const cutoffFilter = includeCutoffsTable
+    ? `AND (hc.cutoff_date IS NULL OR m.fedepo::date >= hc.cutoff_date)`
+    : "";
+
+  return `
     WITH reference_month AS (
       SELECT (date_trunc('month', MAX(m.fedepo::timestamp)) - interval '1 month')::date AS end_month
       FROM stock_movements_raw m WHERE ${scopeWhere.replaceAll("source_id", "m.source_id").replaceAll("branch_id", "m.branch_id").replaceAll("organization_id", "m.organization_id")}
     ), operational_demand AS (
       SELECT btrim(m.idarti)::integer AS article_id, date_trunc('month', m.fedepo::timestamp)::date AS month_start, SUM(m.cantidad) AS demand
       FROM stock_movements_raw m
+      ${cutoffJoin}
       WHERE ${scopeWhere.replaceAll("source_id", "m.source_id").replaceAll("branch_id", "m.branch_id").replaceAll("organization_id", "m.organization_id")}
         AND TRIM(m.tipomov) = 'VT' AND TRIM(m.codcom) IN ('TICK', 'PRES', 'FACV')
+        ${cutoffFilter}
       GROUP BY 1, 2
     ), first_demand AS (
       SELECT article_id, MIN(month_start) AS first_month FROM operational_demand GROUP BY 1
@@ -53,6 +56,8 @@ export async function getSuggestions(
       FROM products_raw p LEFT JOIN stock s ON s.article_id = p.article_id
       CROSS JOIN reference_month r LEFT JOIN first_demand fd ON fd.article_id = p.article_id
       WHERE ${scopeWhere.replaceAll("source_id", "p.source_id").replaceAll("branch_id", "p.branch_id").replaceAll("organization_id", "p.organization_id")}
+        AND p.is_present
+        AND COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1'
     ), six_months AS (
       SELECT ps.article_id, ps.product_name, ps.current_stock, ps.first_month, ps.end_month, months.month_start,
         CASE WHEN ps.first_month IS NULL OR months.month_start < ps.first_month THEN NULL ELSE COALESCE(od.demand, 0) END AS demand
@@ -86,7 +91,30 @@ export async function getSuggestions(
       AND ($7::integer[] IS NULL OR article_id = ANY($7))
     ORDER BY CASE status WHEN 'SUGGESTION_AVAILABLE' THEN 0 WHEN 'IRREGULAR_DEMAND' THEN 1 WHEN 'MANUAL_REVIEW' THEN 2 WHEN 'NO_SUGGESTION' THEN 3 ELSE 4 END, suggested_quantity DESC NULLS LAST, article_id ASC
     LIMIT ${limitParameter} OFFSET ${offsetParameter}
-  `, values);
+  `;
+}
+
+export async function getSuggestions(
+  scope: Scope,
+  options: { search?: string; status?: SuggestionStatus; confidence?: SuggestionConfidence; articleIds?: number[]; limit: number; offset: number },
+) {
+  const values: unknown[] = [...scopeValues(scope), options.search ? `%${options.search}%` : null, options.status ?? null, options.confidence ?? null, options.articleIds?.length ? options.articleIds : null];
+  const limitParameter = `$${values.push(options.limit)}`;
+  const offsetParameter = `$${values.push(options.offset)}`;
+  type SuggestionSqlRow = {
+    article_id: number; product_name: string | null; monthly_demand: string | null; monthly_history: Array<number | string | null>;
+    stock_target: string | null; current_stock: string; suggested_quantity: string | null; confidence: SuggestionConfidence;
+    status: SuggestionStatus; history_months: string; max_monthly_demand: string | null; total_rows: string;
+  };
+  let result;
+  try {
+    result = await query<SuggestionSqlRow>(buildSuggestionsSql(true, limitParameter, offsetParameter), values);
+  } catch (error) {
+    if (!isUndefinedRelationError(error)) {
+      throw error;
+    }
+    result = await query<SuggestionSqlRow>(buildSuggestionsSql(false, limitParameter, offsetParameter), values);
+  }
 
   return {
     total: result.rows[0] ? Number(result.rows[0].total_rows) : 0,
