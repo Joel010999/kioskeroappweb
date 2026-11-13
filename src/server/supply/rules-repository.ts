@@ -44,6 +44,7 @@ export async function listSupplyRules(
       SELECT btrim(m.idarti)::integer AS article_id, COUNT(DISTINCT NULLIF(btrim(m.numero), '')) AS historical_documents
       FROM stock_movements_raw m
       WHERE m.organization_id=$1 AND m.source_id=$2 AND m.branch_id=$3
+        AND btrim(m.idarti) ~ '^[0-9]+$'
         AND TRIM(m.tipomov)='IN' AND TRIM(m.codcom)='HOJD'
       GROUP BY 1
     ), depot_stock AS (
@@ -92,6 +93,7 @@ export async function listSupplyRules(
       SELECT btrim(m.idarti)::integer AS article_id, COUNT(DISTINCT NULLIF(btrim(m.numero), '')) AS historical_documents
       FROM stock_movements_raw m
       WHERE m.organization_id=$1 AND m.source_id=$2 AND m.branch_id=$3
+        AND btrim(m.idarti) ~ '^[0-9]+$'
         AND TRIM(m.tipomov)='IN' AND TRIM(m.codcom)='HOJD'
       GROUP BY 1
     ), depot_stock AS (

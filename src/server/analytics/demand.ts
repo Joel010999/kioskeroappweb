@@ -41,6 +41,7 @@ function buildSuggestionsSql(includeCutoffsTable: boolean, limitParameter: strin
       FROM stock_movements_raw m
       ${cutoffJoin}
       WHERE ${scopeWhere.replaceAll("source_id", "m.source_id").replaceAll("branch_id", "m.branch_id").replaceAll("organization_id", "m.organization_id")}
+        AND btrim(m.idarti) ~ '^[0-9]+$'
         AND TRIM(m.tipomov) = 'VT' AND TRIM(m.codcom) IN ('TICK', 'PRES', 'FACV')
         ${cutoffFilter}
       GROUP BY 1, 2

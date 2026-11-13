@@ -237,6 +237,7 @@ function buildWeeklyReplenishmentQuery(params: {
       CROSS JOIN analysis_window w
       ${cutoffJoin}
       WHERE m.organization_id = $2 AND m.source_id = $3 AND m.branch_id = $4
+        AND btrim(m.idarti) ~ '^[0-9]+$'
         AND TRIM(m.tipomov) = 'VT' AND TRIM(m.codcom) IN ('TICK', 'PRES', 'FACV')
         AND ((m.fedepo::timestamp >= w.from_date AND m.fedepo::timestamp < w.to_date) OR (m.fedepo::timestamp >= w.yoy_from_date AND m.fedepo::timestamp < w.yoy_to_date))
         ${cutoffSalesFilter}
@@ -247,6 +248,7 @@ function buildWeeklyReplenishmentQuery(params: {
       CROSS JOIN analysis_window w
       ${cutoffJoin}
       WHERE m.organization_id = $2 AND m.source_id = $3 AND m.branch_id = $4
+        AND btrim(m.idarti) ~ '^[0-9]+$'
         AND TRIM(m.tipomov) = 'VT' AND TRIM(m.codcom) IN ('TICK', 'PRES', 'FACV') AND m.fedepo::timestamp < w.to_date
         ${cutoffSalesFilter}
     ), weeks AS (

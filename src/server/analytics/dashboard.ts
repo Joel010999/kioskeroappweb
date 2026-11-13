@@ -130,8 +130,9 @@ export async function getTopProducts(scope: Scope, period: Period, limit: number
     FROM stock_movements_raw m
     JOIN products_raw p
       ON p.source_id = m.source_id
-      AND p.article_id = btrim(m.idarti)::integer
+      AND p.article_id = (CASE WHEN btrim(m.idarti) ~ '^[0-9]+$' THEN btrim(m.idarti)::integer ELSE NULL END)
     WHERE ${movementScopeWhere}
+      AND btrim(m.idarti) ~ '^[0-9]+$'
       AND m.fedepo::timestamp >= $4::date
       AND m.fedepo::timestamp < $5::date
       ${searchClause}
@@ -200,7 +201,7 @@ export async function getAttention(scope: Scope, period: Period) {
     WITH period_activity AS (
       SELECT btrim(m.idarti)::integer AS article_id, COUNT(*) AS movements, COALESCE(SUM(${signedQuantitySql}), 0) AS net_units
       FROM stock_movements_raw m
-      WHERE ${movementScopeWhere} AND m.fedepo::timestamp >= $4::date AND m.fedepo::timestamp < $5::date
+      WHERE ${movementScopeWhere} AND btrim(m.idarti) ~ '^[0-9]+$' AND m.fedepo::timestamp >= $4::date AND m.fedepo::timestamp < $5::date
       GROUP BY 1
     ), stock AS (
       SELECT sl.article_id, sl.depo, sl.bulto, sl.saldo, p.payload->>'Descripcion' AS description, COALESCE(a.movements, 0) AS movements, COALESCE(a.net_units, 0) AS net_units
