@@ -1432,7 +1432,7 @@ export async function queryCompleteInventory(options: {
     branchName,
     rubro: options.rubro,
     supplierCode: resolvedCode,
-    supplierName: resolvedName || items[0]?.supplierName,
+    supplierName: resolvedCode || effectiveSupplierSearch ? (resolvedName || items[0]?.supplierName) : undefined,
     total: items.length,
     items,
     queriedAt: now.toISOString(),
@@ -1451,7 +1451,7 @@ export async function queryInventoryExcelData(options: {
   supplierSearch?: string;
   includeInactive?: boolean;
 }) {
-  const report = await queryCompleteInventory({ ...options, limit: 5000 });
+  const report = await queryCompleteInventory({ ...options, limit: 15000 });
   if (report.items.length === 0) {
     return {
       ...report,

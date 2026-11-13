@@ -569,6 +569,32 @@ export function resolvePendingClarification(
   }
 
   if (pending.clarificationType === "SUPPLIER") {
+    // 0. Complete catalog / all products request in inventory
+    if (
+      (pending.intentType === "INVENTORY_EXCEL" || pending.intentType === "INVENTORY_REPORT") &&
+      /\b(todos|todo|general|completo|catalogo|catalogo completo)\b/i.test(clean)
+    ) {
+      clearPendingClarification(senderPhone);
+      return {
+        type: "RESOLVED",
+        intent: {
+          type: pending.intentType,
+          rawText: text,
+          slots: {
+            ...pending.slots,
+            supplierCode: undefined,
+            supplierName: undefined,
+            supplierSearch: undefined,
+            targetRubro: undefined,
+            branchTarget: pending.slots.branchTarget || "ALL",
+            needsClarification: false,
+            clarificationMessage: undefined,
+          },
+          confidence: 0.98,
+        },
+      };
+    }
+
     // 1. Check if user wants to switch to chat / no excel
     if (isSwitchToChatRequest(text)) {
       pending.intentType = "REPLENISHMENT";
@@ -602,15 +628,26 @@ export function resolvePendingClarification(
           disambiguationCandidates: undefined,
         };
 
-        if (branchTarget === "CENTRO" || branchTarget === "JARDIN") {
+        if (
+          (pending.intentType === "INVENTORY_EXCEL" ||
+            pending.intentType === "INVENTORY_REPORT") ||
+          branchTarget === "CENTRO" ||
+          branchTarget === "JARDIN"
+        ) {
           clearPendingClarification(senderPhone);
           return {
             type: "RESOLVED",
             intent: {
               type: pending.intentType,
               rawText: text,
-              slots: updatedSlots,
-              confidence: 0.95,
+              slots: {
+                ...updatedSlots,
+                branchTarget:
+                  branchTarget !== "ALL"
+                    ? branchTarget
+                    : pending.slots.branchTarget || "ALL",
+              },
+              confidence: 0.98,
             },
           };
         }
@@ -653,15 +690,26 @@ export function resolvePendingClarification(
           clarificationMessage: undefined,
         };
 
-        if (branchTarget === "CENTRO" || branchTarget === "JARDIN") {
+        if (
+          (pending.intentType === "INVENTORY_EXCEL" ||
+            pending.intentType === "INVENTORY_REPORT") ||
+          branchTarget === "CENTRO" ||
+          branchTarget === "JARDIN"
+        ) {
           clearPendingClarification(senderPhone);
           return {
             type: "RESOLVED",
             intent: {
               type: pending.intentType,
               rawText: text,
-              slots: updatedSlots,
-              confidence: 0.95,
+              slots: {
+                ...updatedSlots,
+                branchTarget:
+                  branchTarget !== "ALL"
+                    ? branchTarget
+                    : pending.slots.branchTarget || "ALL",
+              },
+              confidence: 0.98,
             },
           };
         }
@@ -714,15 +762,29 @@ export function resolvePendingClarification(
         clarificationMessage: undefined,
       };
 
-      if (branchTarget === "CENTRO" || branchTarget === "JARDIN") {
+      if (
+        (pending.intentType === "INVENTORY_EXCEL" ||
+          pending.intentType === "INVENTORY_REPORT") ||
+        branchTarget === "CENTRO" ||
+        branchTarget === "JARDIN"
+      ) {
         clearPendingClarification(senderPhone);
         return {
           type: "RESOLVED",
           intent: {
             type: pending.intentType,
             rawText: text,
-            slots: updatedSlots,
-            confidence: 0.95,
+            slots: {
+              ...updatedSlots,
+              supplierCode: undefined,
+              supplierName: undefined,
+              supplierSearch: undefined,
+              branchTarget:
+                branchTarget !== "ALL"
+                  ? branchTarget
+                  : pending.slots.branchTarget || "ALL",
+            },
+            confidence: 0.98,
           },
         };
       }
@@ -766,6 +828,32 @@ export function resolvePendingClarification(
   }
 
   if (pending.clarificationType === "RUBRO") {
+    // 0. Complete catalog / all products request in inventory
+    if (
+      (pending.intentType === "INVENTORY_EXCEL" || pending.intentType === "INVENTORY_REPORT") &&
+      /\b(todos|todo|general|completo|catalogo|catalogo completo)\b/i.test(clean)
+    ) {
+      clearPendingClarification(senderPhone);
+      return {
+        type: "RESOLVED",
+        intent: {
+          type: pending.intentType,
+          rawText: text,
+          slots: {
+            ...pending.slots,
+            targetRubro: undefined,
+            supplierCode: undefined,
+            supplierName: undefined,
+            supplierSearch: undefined,
+            branchTarget: pending.slots.branchTarget || "ALL",
+            needsClarification: false,
+            clarificationMessage: undefined,
+          },
+          confidence: 0.98,
+        },
+      };
+    }
+
     // A. Switch to chat
     if (isSwitchToChatRequest(text)) {
       pending.intentType = "REPLENISHMENT";
@@ -784,12 +872,20 @@ export function resolvePendingClarification(
     if (rubroInfo.canonical) {
       const finalRubro = rubroInfo.canonical;
 
-      if (updatedBranchTarget === "CENTRO" || updatedBranchTarget === "JARDIN") {
+      if (
+        (pending.intentType === "INVENTORY_EXCEL" ||
+          pending.intentType === "INVENTORY_REPORT") ||
+        updatedBranchTarget === "CENTRO" ||
+        updatedBranchTarget === "JARDIN"
+      ) {
         clearPendingClarification(senderPhone);
         const updatedSlots: ParsedSlots = {
           ...pending.slots,
           targetRubro: finalRubro,
-          branchTarget: updatedBranchTarget,
+          branchTarget:
+            updatedBranchTarget !== "ALL"
+              ? updatedBranchTarget
+              : pending.slots.branchTarget || "ALL",
           branchId: updatedBranchId,
           needsClarification: false,
           clarificationMessage: undefined,
@@ -801,7 +897,7 @@ export function resolvePendingClarification(
             type: pending.intentType,
             rawText: text,
             slots: updatedSlots,
-            confidence: 0.95,
+            confidence: 0.98,
           },
         };
       }
@@ -860,15 +956,27 @@ export function resolvePendingClarification(
           clarificationMessage: undefined,
         };
 
-        if (updatedBranchTarget === "CENTRO" || updatedBranchTarget === "JARDIN") {
+        if (
+          (pending.intentType === "INVENTORY_EXCEL" ||
+            pending.intentType === "INVENTORY_REPORT") ||
+          updatedBranchTarget === "CENTRO" ||
+          updatedBranchTarget === "JARDIN"
+        ) {
           clearPendingClarification(senderPhone);
           return {
             type: "RESOLVED",
             intent: {
               type: pending.intentType,
               rawText: text,
-              slots: updatedSlots,
-              confidence: 0.95,
+              slots: {
+                ...updatedSlots,
+                targetRubro: undefined,
+                branchTarget:
+                  updatedBranchTarget !== "ALL"
+                    ? updatedBranchTarget
+                    : pending.slots.branchTarget || "ALL",
+              },
+              confidence: 0.98,
             },
           };
         }

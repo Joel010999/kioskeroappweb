@@ -788,6 +788,10 @@ export function formatGreetingMessage(name?: string): string {
     "📑 *5. Excel de reposición por rubro y sucursal*\n" +
     "Generá la planilla lista para armar el pedido indicando el rubro y la sucursal (por ejemplo: _«Excel de cigarrillos para Centro»_ o _«Quiero la planilla de bebidas para Jardín»_).\n" +
     "También podés solicitar reposición por proveedor (por ejemplo: _«Excel de Coca-Cola»_ o _«Excel del proveedor 50350»_).\n\n" +
+    "📋 *6. Inventario completo por rubro (Excel)*\n" +
+    "Descargá la planilla con todo el catálogo y stock de un rubro en Centro, Jardín y Depósito (por ejemplo: _«Inventario de Cigarrillos»_ o _«Excel rubro Bebidas»_).\n\n" +
+    "🏭 *7. Inventario completo por proveedor (Excel)*\n" +
+    "Descargá la planilla con todos los productos de un proveedor y sus cantidades en cada sucursal (por ejemplo: _«Inventario de Arcor»_, _«Excel proveedor 50350»_ o _«Planilla Coca Cola»_).\n\n" +
     "Podés escribirme una pregunta directamente o pedirme `ayuda` para ver estas opciones.\n\n" +
     "_Si una función todavía no está disponible, te lo voy a indicar._"
   );
@@ -838,6 +842,11 @@ export function formatUnknownMessage(): string {
     "• \"Haceme un Excel de galletitas para Jardín\"\n" +
     "• \"Pasame la reposición del proveedor Arcor para Centro\"\n" +
     "• \"Generá el Excel de cigarrillos para Jardín\"\n\n" +
+    "📋 *Descargar inventario completo (Excel)*\n" +
+    "• \"Inventario de cigarrillos en Excel\"\n" +
+    "• \"Excel completo del proveedor 50350\"\n" +
+    "• \"Planilla de stock de bebidas\"\n" +
+    "• \"Inventario de Arcor en Excel\"\n\n" +
     "🏪 *Consultar por sucursal*\n" +
     "Podés consultar por *Centro* o *Jardín*. El Depósito Central abastece a ambas sucursales.\n\n" +
     "💡 _También podés escribir el nombre de un producto o su código para buscarlo._\n\n" +

@@ -245,6 +245,88 @@ describe("WhatsApp NLP Router & Intent Parsing", () => {
       expect(res.slots.clarificationMessage).toContain("Chocolates");
       expect(res.slots.clarificationMessage).toContain("Centro");
     });
+
+    it("handles option 6 as inventory excel requiring rubro", () => {
+      const res = parseUserMessage("6", refDate);
+      expect(res.type).toBe("INVENTORY_EXCEL");
+      expect(res.slots.wantsExcel).toBe(true);
+      expect(res.slots.needsClarification).toBe(true);
+      expect(res.slots.clarificationType).toBe("RUBRO");
+      expect(res.slots.pendingIntentType).toBe("INVENTORY_EXCEL");
+      expect(res.slots.clarificationMessage).toContain("Chocolates");
+      expect(res.slots.clarificationMessage).toContain("catálogo general");
+
+      const resText = parseUserMessage("opcion 6", refDate);
+      expect(resText.type).toBe("INVENTORY_EXCEL");
+      expect(resText.slots.needsClarification).toBe(true);
+    });
+
+    it("handles option 7 as inventory excel requiring supplier", () => {
+      const res = parseUserMessage("7", refDate);
+      expect(res.type).toBe("INVENTORY_EXCEL");
+      expect(res.slots.wantsExcel).toBe(true);
+      expect(res.slots.needsClarification).toBe(true);
+      expect(res.slots.clarificationType).toBe("SUPPLIER");
+      expect(res.slots.pendingIntentType).toBe("INVENTORY_EXCEL");
+      expect(res.slots.clarificationMessage).toContain("Arcor");
+      expect(res.slots.clarificationMessage).toContain("50350");
+
+      const resText = parseUserMessage("opción 7", refDate);
+      expect(resText.type).toBe("INVENTORY_EXCEL");
+      expect(resText.slots.needsClarification).toBe(true);
+    });
+
+    it("handles generic 'inventario por rubro' and 'inventario por proveedor' queries", () => {
+      const byRubro = parseUserMessage("Inventario por rubro", refDate);
+      expect(byRubro.type).toBe("INVENTORY_REPORT");
+      expect(byRubro.slots.needsClarification).toBe(true);
+      expect(byRubro.slots.clarificationType).toBe("RUBRO");
+
+      const byRubroExcel = parseUserMessage("Excel por rubro", refDate);
+      expect(byRubroExcel.type).toBe("INVENTORY_EXCEL");
+      expect(byRubroExcel.slots.wantsExcel).toBe(true);
+      expect(byRubroExcel.slots.needsClarification).toBe(true);
+      expect(byRubroExcel.slots.clarificationType).toBe("RUBRO");
+
+      const bySup = parseUserMessage("Inventario por proveedor", refDate);
+      expect(bySup.type).toBe("INVENTORY_REPORT");
+      expect(bySup.slots.needsClarification).toBe(true);
+      expect(bySup.slots.clarificationType).toBe("SUPPLIER");
+
+      const bySupExcel = parseUserMessage("Excel por proveedor", refDate);
+      expect(bySupExcel.type).toBe("INVENTORY_EXCEL");
+      expect(bySupExcel.slots.wantsExcel).toBe(true);
+      expect(bySupExcel.slots.needsClarification).toBe(true);
+      expect(bySupExcel.slots.clarificationType).toBe("SUPPLIER");
+    });
+
+    it("routes direct complete inventory requests by rubro or supplier to INVENTORY_EXCEL", () => {
+      const rubroExcel = parseUserMessage("Excel completo de cigarrillos", refDate);
+      expect(rubroExcel.type).toBe("INVENTORY_EXCEL");
+      expect(rubroExcel.slots.targetRubro).toBe("CIGARRILLOS");
+      expect(rubroExcel.slots.wantsExcel).toBe(true);
+      expect(rubroExcel.slots.needsClarification).toBe(false);
+
+      const rubroPrefix = parseUserMessage("Excel rubro galletitas", refDate);
+      expect(rubroPrefix.type).toBe("INVENTORY_EXCEL");
+      expect(rubroPrefix.slots.targetRubro).toBe("GALLETITAS");
+      expect(rubroPrefix.slots.needsClarification).toBe(false);
+
+      const supExcel = parseUserMessage("Excel completo de Arcor", refDate);
+      expect(supExcel.type).toBe("INVENTORY_EXCEL");
+      expect(supExcel.slots.supplierName).toBe("Arcor");
+      expect(supExcel.slots.wantsExcel).toBe(true);
+      expect(supExcel.slots.needsClarification).toBe(false);
+
+      const supCode = parseUserMessage("Excel del proveedor 50350", refDate);
+      expect(supCode.type).toBe("INVENTORY_EXCEL");
+      expect(supCode.slots.supplierCode).toBe("50350");
+      expect(supCode.slots.needsClarification).toBe(false);
+
+      const supInv = parseUserMessage("Planilla de inventario proveedor 50350", refDate);
+      expect(supInv.type).toBe("INVENTORY_EXCEL");
+      expect(supInv.slots.supplierCode).toBe("50350");
+    });
   });
 
   describe("Next Delivery & Ambiguous Queries", () => {

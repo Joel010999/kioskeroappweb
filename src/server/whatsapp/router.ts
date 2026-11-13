@@ -686,6 +686,38 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
       confidence: 1.0,
     };
   }
+  if (/^6$/.test(clean) || /^(opcion|opción)\s*6$/i.test(clean)) {
+    return {
+      type: "INVENTORY_EXCEL",
+      rawText: text,
+      slots: {
+        ...slots,
+        wantsExcel: true,
+        needsClarification: true,
+        clarificationType: "RUBRO",
+        clarificationMessage:
+          "¿De qué rubro querés descargar el inventario completo en Excel? Podés indicarme por ejemplo: *Chocolates*, *Golosinas*, *Bebidas*, *Cigarrillos*, *Galletitas*, *Almacén* (o escribir 'todos' para el catálogo general).",
+        pendingIntentType: "INVENTORY_EXCEL",
+      },
+      confidence: 1.0,
+    };
+  }
+  if (/^7$/.test(clean) || /^(opcion|opción)\s*7$/i.test(clean)) {
+    return {
+      type: "INVENTORY_EXCEL",
+      rawText: text,
+      slots: {
+        ...slots,
+        wantsExcel: true,
+        needsClarification: true,
+        clarificationType: "SUPPLIER",
+        clarificationMessage:
+          "¿De qué proveedor querés descargar el inventario completo en Excel? Podés escribir el nombre o código (por ejemplo: *Arcor*, *Coca-Cola*, *Baggio*, *50350*).",
+        pendingIntentType: "INVENTORY_EXCEL",
+      },
+      confidence: 1.0,
+    };
+  }
 
   // 2. GREETINGS & HELP
   if (/^(hola|buenas|buen dia|buenas tardes|buenas noches|che|que tal|hola monica)\b/.test(clean) && clean.split(" ").length <= 4) {
@@ -752,10 +784,11 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
     /\b(pasame|mandame|enviame|generame|armame|descargame|descargar|exportar|exportame|bajar|quiero|necesito|haceme)\b/.test(clean);
 
   const mentionsExplicitInventory =
-    /\b(inventario|inventario completo|inventario general|stock completo|listado de stock|reporte de stock|planilla de stock|catalogo completo)\b/.test(
+    /\b(inventario|inventario completo|inventario general|stock completo|listado de stock|reporte de stock|planilla de stock|catalogo completo|excel completo|planilla completa|archivo completo|reporte completo)\b/.test(
       clean
     ) ||
-    (/\b(todos los productos|todos los articulos)\b/.test(clean) && !mentionsReplenish);
+    (/\b(todos los productos|todos los articulos)\b/.test(clean) && !mentionsReplenish) ||
+    (/\b(excel|planilla|archivo|reporte)\s+(por|del|de\s+un|de)?\s*(rubro|proveedor)\b/.test(clean) && !mentionsReplenish);
 
   if (mentionsExplicitInventory && !mentionsReplenish && !/\b(ventas|pedidos|fecha del excel)\b/.test(clean)) {
     const invalidBranch = extractInvalidBranch(text);
@@ -772,6 +805,49 @@ export function parseUserMessage(text: string, referenceDate?: Date): ParsedInte
           pendingIntentType: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
         },
         confidence: 0.95,
+      };
+    }
+
+    const isGenericRubroRequest =
+      /\b(por rubro|un rubro|de rubro|algun rubro|que rubro|rubros)\b/.test(clean) &&
+      !rubroInfo.canonical;
+
+    const isGenericSupplierRequest =
+      /\b(por proveedor|un proveedor|de proveedor|algun proveedor|que proveedor|proveedores)\b/.test(clean) &&
+      !supplierInfo.candidate &&
+      (!resolvedSupplier || resolvedSupplier.status === "NOT_FOUND");
+
+    if (isGenericRubroRequest) {
+      return {
+        type: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: mentionsExcelOrSheet,
+          needsClarification: true,
+          clarificationType: "RUBRO",
+          clarificationMessage:
+            "¿De qué rubro querés descargar el inventario completo en Excel? Podés indicarme por ejemplo: *Chocolates*, *Golosinas*, *Bebidas*, *Cigarrillos*, *Galletitas*, *Almacén* (o escribir 'todos' para el catálogo general).",
+          pendingIntentType: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
+        },
+        confidence: 0.98,
+      };
+    }
+
+    if (isGenericSupplierRequest) {
+      return {
+        type: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
+        rawText: text,
+        slots: {
+          ...slots,
+          wantsExcel: mentionsExcelOrSheet,
+          needsClarification: true,
+          clarificationType: "SUPPLIER",
+          clarificationMessage:
+            "¿De qué proveedor querés descargar el inventario completo en Excel? Podés escribir el nombre o código (por ejemplo: *Arcor*, *Coca-Cola*, *Baggio*, *50350*).",
+          pendingIntentType: mentionsExcelOrSheet ? "INVENTORY_EXCEL" : "INVENTORY_REPORT",
+        },
+        confidence: 0.98,
       };
     }
 
