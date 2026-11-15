@@ -135,7 +135,7 @@ describe("weekly replenishment rules", () => {
       suggestedQuantity: 25,
     });
 
-    // Pending orders reduce suggested quantity cleanly without double counting
+    // Los pedidos internos pendientes NO modifican ni reducen la cantidad sugerida
     const withPendingOrder = weeklyDecision({
       currentStock: 3,
       activeWeeks: 6,
@@ -145,11 +145,26 @@ describe("weekly replenishment rules", () => {
       baseStock: 12,
       pendingOrderQuantity: 4,
     });
+    // stockTarget = max(demandTarget (3), baseStock (12)) = 12
+    // available = max(0, currentStock (3)) = 3
+    // suggested = max(0, 12 - 3) = 9 (los 4 pendientes NO se descuentan)
     expect(withPendingOrder).toEqual({
       status: "SUGGESTION_AVAILABLE",
       targetStock: 12,
-      suggestedQuantity: 5,
+      suggestedQuantity: 9,
     });
+
+    // Sin pedidos pendientes, la sugerencia es exactamente idéntica (9)
+    const withoutPendingOrder = weeklyDecision({
+      currentStock: 3,
+      activeWeeks: 6,
+      medianDemand: 2,
+      maxDemand: 3,
+      isDiscrete: true,
+      baseStock: 12,
+      pendingOrderQuantity: 0,
+    });
+    expect(withoutPendingOrder.suggestedQuantity).toBe(9);
   });
 
   it("applies baseStock to new products with zero or <3 active weeks while holding negative stock", () => {
@@ -193,6 +208,145 @@ describe("weekly replenishment rules", () => {
       status: "NEGATIVE_STOCK",
       targetStock: null,
       suggestedQuantity: null,
+    });
+  });
+
+  describe("Nueva lógica de reposición: Exclusión total de pedidos pendientes", () => {
+    it("garantiza que pedidos internos pendientes (solicitados, preparados, en tránsito) no alteren la sugerencia", () => {
+      // Demanda = 7 u/sem -> 10d demand = 10
+      // Base stock = 15
+      // stockTarget = max(10, 15) = 15
+      // currentBranchStock = 5 -> available = max(0, 5) = 5
+      // suggested = max(0, 15 - 5) = 10
+      const baseline = weeklyDecision({
+        currentStock: 5,
+        activeWeeks: 4,
+        medianDemand: 7,
+        maxDemand: 8,
+        isDiscrete: true,
+        baseStock: 15,
+        pendingOrderQuantity: 0,
+      });
+      expect(baseline.suggestedQuantity).toBe(10);
+      expect(baseline.targetStock).toBe(15);
+      expect(baseline.status).toBe("SUGGESTION_AVAILABLE");
+
+      // Con 3 unidades pendientes en pedido interno
+      const with3Pending = weeklyDecision({
+        currentStock: 5,
+        activeWeeks: 4,
+        medianDemand: 7,
+        maxDemand: 8,
+        isDiscrete: true,
+        baseStock: 15,
+        pendingOrderQuantity: 3,
+      });
+      expect(with3Pending.suggestedQuantity).toBe(10);
+      expect(with3Pending.targetStock).toBe(15);
+
+      // Con 20 unidades pendientes en pedido interno (mayor al stock objetivo)
+      const with20Pending = weeklyDecision({
+        currentStock: 5,
+        activeWeeks: 4,
+        medianDemand: 7,
+        maxDemand: 8,
+        isDiscrete: true,
+        baseStock: 15,
+        pendingOrderQuantity: 20,
+      });
+      expect(with20Pending.suggestedQuantity).toBe(10);
+      expect(with20Pending.targetStock).toBe(15);
+    });
+
+    it("utiliza exclusivamente el stock actual de la sucursal: suggested = max(0, stockTarget - available)", () => {
+      // Sin base stock, guiado por demanda estimada
+      // Demanda = 14 u/sem -> 10d demand = 20
+      // currentStock = 8 -> available = 8 -> suggested = 20 - 8 = 12
+      const res = weeklyDecision({
+        currentStock: 8,
+        activeWeeks: 5,
+        medianDemand: 14,
+        maxDemand: 15,
+        isDiscrete: true,
+        pendingOrderQuantity: 5, // debe ignorarse
+      });
+      expect(res.targetStock).toBe(20);
+      expect(res.suggestedQuantity).toBe(12);
+      expect(res.status).toBe("SUGGESTION_AVAILABLE");
+
+      // Si stock actual >= stockTarget, sugerencia es 0
+      const satisfiedStock = weeklyDecision({
+        currentStock: 25,
+        activeWeeks: 5,
+        medianDemand: 14,
+        maxDemand: 15,
+        isDiscrete: true,
+        pendingOrderQuantity: 10,
+      });
+      expect(satisfiedStock.targetStock).toBe(20);
+      expect(satisfiedStock.suggestedQuantity).toBe(0);
+      expect(satisfiedStock.status).toBe("NO_SUGGESTION");
+    });
+
+    it("mantiene el stock base funcionando correctamente y toma el máximo entre demanda y stock base", () => {
+      // Caso 1: baseStock gana sobre demanda
+      // demanda = 7 (10d demand = 10), baseStock = 25 -> stockTarget = 25
+      const baseWins = weeklyDecision({
+        currentStock: 10,
+        activeWeeks: 4,
+        medianDemand: 7,
+        maxDemand: 8,
+        isDiscrete: true,
+        baseStock: 25,
+      });
+      expect(baseWins.targetStock).toBe(25);
+      expect(baseWins.suggestedQuantity).toBe(15);
+
+      // Caso 2: demanda estimada gana sobre baseStock
+      // demanda = 28 (10d demand = 40), baseStock = 25 -> stockTarget = 40
+      const demandWins = weeklyDecision({
+        currentStock: 10,
+        activeWeeks: 4,
+        medianDemand: 28,
+        maxDemand: 30,
+        isDiscrete: true,
+        baseStock: 25,
+      });
+      expect(demandWins.targetStock).toBe(40);
+      expect(demandWins.suggestedQuantity).toBe(30);
+    });
+
+    it("preserva la clasificación de stock negativo sin emitir sugerencias", () => {
+      const negative = weeklyDecision({
+        currentStock: -5,
+        activeWeeks: 4,
+        medianDemand: 14,
+        maxDemand: 15,
+        isDiscrete: true,
+        baseStock: 20,
+        pendingOrderQuantity: 15,
+      });
+      expect(negative).toEqual({
+        status: "NEGATIVE_STOCK",
+        targetStock: null,
+        suggestedQuantity: null,
+      });
+    });
+
+    it("preserva la detección de demanda irregular independientemente de pedidos pendientes", () => {
+      // activeWeeks >= 3, maxDemand (30) - median (5) >= 20 y max >= median * 3 (30 >= 15) -> IRREGULAR_DEMAND
+      // Si currentStock >= baseStock (5 >= 5) -> IRREGULAR_DEMAND
+      const irregularWithSufficientStock = weeklyDecision({
+        currentStock: 5,
+        activeWeeks: 4,
+        medianDemand: 5,
+        maxDemand: 30,
+        isDiscrete: true,
+        baseStock: 5,
+        pendingOrderQuantity: 10,
+      });
+      expect(irregularWithSufficientStock.status).toBe("IRREGULAR_DEMAND");
+      expect(irregularWithSufficientStock.suggestedQuantity).toBeNull();
     });
   });
 });

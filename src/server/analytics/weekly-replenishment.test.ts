@@ -67,6 +67,10 @@ describe("getWeeklyReplenishment catalog completeness, cutoffs & 42P01 resilienc
     expect(sqlLog[0]).toContain("COALESCE(o.origin_branch_id, o.branch_id) = $4");
     expect(sqlLog[0]).not.toContain("o.dispatched_at");
     expect(sqlLog[0]).toContain("AND is_active = true");
+    // Verifica que la sugerencia y el estado no descuenten ni sumen pedidos pendientes
+    expect(sqlLog[0]).not.toContain("(stock_current + pending_order_quantity)");
+    expect(sqlLog[0]).toContain("GREATEST(0, stock_current)");
+    expect(sqlLog[0]).toContain("GREATEST(0, target_stock_calc - GREATEST(0, stock_current))");
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toMatchObject({
       article_id: 522,

@@ -359,11 +359,11 @@ function buildWeeklyReplenishmentQuery(params: {
           WHEN base_stock IS NOT NULL THEN
             CASE
               WHEN active_weeks = 0 AND base_stock = 0 THEN 'NO_DEMAND'
-              WHEN irregular_demand AND (stock_current + pending_order_quantity) >= base_stock THEN 'IRREGULAR_DEMAND'
+              WHEN irregular_demand AND GREATEST(0, stock_current) >= base_stock THEN 'IRREGULAR_DEMAND'
               WHEN (
                 CASE WHEN is_discrete
-                  THEN CEIL(GREATEST(0, effective_target - (stock_current + pending_order_quantity)))
-                  ELSE GREATEST(0, effective_target - (stock_current + pending_order_quantity))
+                  THEN CEIL(GREATEST(0, effective_target - GREATEST(0, stock_current)))
+                  ELSE GREATEST(0, effective_target - GREATEST(0, stock_current))
                 END
               ) > 0 THEN 'SUGGESTION_AVAILABLE'
               ELSE 'NO_SUGGESTION'
@@ -373,8 +373,8 @@ function buildWeeklyReplenishmentQuery(params: {
           WHEN irregular_demand THEN 'IRREGULAR_DEMAND'
           WHEN (
             CASE WHEN is_discrete
-              THEN CEIL(GREATEST(0, effective_target - (stock_current + pending_order_quantity)))
-              ELSE GREATEST(0, effective_target - (stock_current + pending_order_quantity))
+              THEN CEIL(GREATEST(0, effective_target - GREATEST(0, stock_current)))
+              ELSE GREATEST(0, effective_target - GREATEST(0, stock_current))
             END
           ) > 0 THEN 'SUGGESTION_AVAILABLE'
           ELSE 'NO_SUGGESTION'
@@ -389,8 +389,8 @@ function buildWeeklyReplenishmentQuery(params: {
         CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
         ELSE target_stock_calc END AS target_stock,
         CASE WHEN status IN ('NEGATIVE_STOCK', 'INSUFFICIENT_HISTORY', 'IRREGULAR_DEMAND') THEN NULL
-        WHEN is_discrete THEN CEIL(GREATEST(0, target_stock_calc - (stock_current + pending_order_quantity)))
-        ELSE GREATEST(0, target_stock_calc - (stock_current + pending_order_quantity)) END AS suggested_quantity
+        WHEN is_discrete THEN CEIL(GREATEST(0, target_stock_calc - GREATEST(0, stock_current)))
+        ELSE GREATEST(0, target_stock_calc - GREATEST(0, stock_current)) END AS suggested_quantity
       FROM items
     ) decisions
     WHERE ($6::text IS NULL OR description ILIKE $6 OR article_id::text ILIKE $6 OR supplier_code ILIKE $6 OR classification_code ILIKE $6 OR rubro ILIKE $6)
