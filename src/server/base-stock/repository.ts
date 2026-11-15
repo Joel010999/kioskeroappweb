@@ -196,7 +196,6 @@ export async function listBranchBaseStock(
       ${supplierClause}
       ${configClause}
     ORDER BY
-      CASE WHEN base_stock IS NOT NULL THEN 0 ELSE 1 END ASC,
       is_active DESC,
       LOWER(COALESCE(description, '')) ASC,
       article_id ASC

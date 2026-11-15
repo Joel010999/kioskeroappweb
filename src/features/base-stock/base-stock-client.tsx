@@ -193,17 +193,70 @@ export function BaseStockClient({
             base_stock: targetBaseStock,
           }),
         });
-        const body = (await response.json()) as { message?: string };
+        const body = (await response.json()) as {
+          branch_id?: number;
+          article_id?: number;
+          base_stock?: number | null;
+          is_configured?: boolean;
+          message?: string;
+        };
         if (!response.ok) {
           throw new Error(body.message ?? "No se pudo guardar el stock base.");
         }
 
+        const savedBaseStock =
+          body.base_stock !== undefined ? body.base_stock : targetBaseStock;
+        const savedIsConfigured =
+          body.is_configured !== undefined ? body.is_configured : savedBaseStock !== null;
+
         setFeedback(
-          targetBaseStock === null
+          savedBaseStock === null
             ? `Se quitó el stock base de #${row.article_id} en ${branchLabel(branchId)}.`
-            : `Stock base de #${row.article_id} guardado en ${unitsFormatter.format(targetBaseStock)} u. para ${branchLabel(branchId)}.`,
+            : `Stock base de #${row.article_id} guardado en ${unitsFormatter.format(savedBaseStock)} u. para ${branchLabel(branchId)}.`,
         );
-        setReloadTick((t) => t + 1);
+
+        // Actualizamos el estado local in-place de forma inmediata para que el cambio
+        // se refleje en pantalla al instante sin desmontar la tabla ni desordenar las filas.
+        setData((prev) => {
+          if (!prev) return prev;
+          const oldRow = prev.rows.find((r) => r.article_id === row.article_id);
+          const wasConfigured = oldRow?.is_configured ?? false;
+          const wasZero = oldRow?.base_stock === 0;
+          const isNowConfigured = savedIsConfigured;
+          const isNowZero = savedBaseStock === 0;
+
+          const configuredDelta = (isNowConfigured ? 1 : 0) - (wasConfigured ? 1 : 0);
+          const unconfiguredDelta = (!isNowConfigured ? 1 : 0) - (!wasConfigured ? 1 : 0);
+          const zeroDelta = (isNowZero ? 1 : 0) - (wasZero ? 1 : 0);
+
+          return {
+            ...prev,
+            summary: {
+              ...prev.summary,
+              configured_count: Math.max(0, prev.summary.configured_count + configuredDelta),
+              unconfigured_count: Math.max(0, prev.summary.unconfigured_count + unconfiguredDelta),
+              zero_count: Math.max(0, prev.summary.zero_count + zeroDelta),
+            },
+            rows: prev.rows.map((r) =>
+              r.article_id === row.article_id
+                ? {
+                    ...r,
+                    base_stock: savedBaseStock,
+                    is_configured: savedIsConfigured,
+                    updated_at: new Date().toISOString(),
+                  }
+                : r,
+            ),
+          };
+        });
+
+        // Limpiamos únicamente el borrador de este artículo, preservando cualquier otro borrador en pantalla
+        setDraftValues((prev) => {
+          if (!(row.article_id in prev)) return prev;
+          const next = { ...prev };
+          delete next[row.article_id];
+          return next;
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Error al guardar stock base.");
       } finally {
@@ -240,7 +293,21 @@ export function BaseStockClient({
         setFeedback(
           `Historial reiniciado para #${row.article_id} en ${branchLabel(branchId)} desde ${todayIso()}. Las ventas previas no se borran ni se usan en proyecciones futuras.`,
         );
-        setReloadTick((t) => t + 1);
+        setData((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rows: prev.rows.map((r) =>
+              r.article_id === row.article_id
+                ? {
+                    ...r,
+                    history_cutoff_date: todayIso(),
+                    snapshot_mismatch: null,
+                  }
+                : r,
+            ),
+          };
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Error al guardar corte de historial.");
       } finally {
@@ -270,7 +337,20 @@ export function BaseStockClient({
         setFeedback(
           `Se restauró el historial completo para #${row.article_id} en ${branchLabel(branchId)}.`,
         );
-        setReloadTick((t) => t + 1);
+        setData((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rows: prev.rows.map((r) =>
+              r.article_id === row.article_id
+                ? {
+                    ...r,
+                    history_cutoff_date: null,
+                  }
+                : r,
+            ),
+          };
+        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Error al restaurar historial.");
       } finally {
