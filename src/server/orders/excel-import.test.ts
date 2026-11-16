@@ -209,6 +209,55 @@ describe("Importación de pedidos desde Excel", () => {
       expect(result.unmatchedRows[1].error).toContain("Cantidad inválida");
     });
 
+    it("detecta artículos pertenecientes a otros proveedores cuando se especifica targetSupplier", async () => {
+      (query as any).mockResolvedValueOnce({
+        rows: [
+          {
+            article_id: 2222,
+            description: "ACEITE CANUELAS 900cc (12)",
+            classification_code: "0114462",
+            supplier_code: "50350",
+            unit_measure: "UN",
+            bulto: "12",
+            stock_current: "90",
+            depot_stock: "150",
+            supply_mode: "DEPOT",
+          },
+          {
+            article_id: 3333,
+            description: "TURRON ARCOR x50",
+            classification_code: "0170012",
+            supplier_code: "60642",
+            unit_measure: "UN",
+            bulto: "50",
+            stock_current: "10",
+            depot_stock: "100",
+            supply_mode: "DEPOT",
+          },
+        ],
+      });
+
+      const parsedRows = [
+        { rowNumber: 2, rawCode: "2222", rawDescription: "ACEITE", rawQuantity: "12 UNID", parsedQuantity: 12, articleId: 2222 },
+        { rowNumber: 3, rawCode: "3333", rawDescription: "TURRON", rawQuantity: "5 UNID", parsedQuantity: 5, articleId: 3333 },
+      ];
+
+      const result = await validateExcelAgainstCatalog(parsedRows, mockScope, "50350");
+
+      expect(result.summary.totalRows).toBe(2);
+      expect(result.summary.incompatibleSupplierRows).toBe(1);
+
+      const aceite = result.items.find((i) => i.articleId === 2222);
+      const turron = result.items.find((i) => i.articleId === 3333);
+
+      expect(aceite?.status).toBe("VALID");
+      expect(aceite?.supplierMismatch).toBeFalsy();
+
+      expect(turron?.status).toBe("WARNING_INCOMPATIBLE_SUPPLIER");
+      expect(turron?.supplierMismatch).toBe(true);
+      expect(turron?.message).toContain("Incompatible: pertenece a Prov. 60642");
+    });
+
     it("asocia correctamente productos de Figuritas con rubro 'FIGURITAS'", async () => {
       (query as any).mockResolvedValueOnce({
         rows: [
@@ -340,6 +389,116 @@ describe("Importación de pedidos desde Excel", () => {
           actorId: "1",
         })
       ).rejects.toThrow(RequestValidationError);
+    });
+
+    it("rechaza artículos de otros proveedores cuando se especifica targetSupplier", async () => {
+      const mockClient = {
+        query: vi.fn(),
+      };
+      // Idempotency: not exists
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+      // Catalog query
+      mockClient.query.mockResolvedValueOnce({
+        rows: [
+          {
+            article_id: 2222,
+            description: "ACEITE",
+            classification_code: "01",
+            supplier_code: "50350",
+            unit_measure: "UN",
+            bulto: "1",
+            stock_current: "10",
+          },
+          {
+            article_id: 3333,
+            description: "TURRON",
+            classification_code: "02",
+            supplier_code: "60642",
+            unit_measure: "UN",
+            bulto: "1",
+            stock_current: "10",
+          },
+        ],
+      });
+      (withTransaction as any).mockImplementation(async (cb: any) => cb(mockClient));
+
+      await expect(
+        confirmOrderFromExcel(
+          {
+            scope: mockScope,
+            branchId: 2,
+            planningDate: "2026-10-31",
+            items: [
+              { article_id: 2222, requested_quantity: 10 },
+              { article_id: 3333, requested_quantity: 5 },
+            ],
+            idempotencyToken: "foreign-sup-token",
+            actorId: "1",
+          },
+          "50350",
+        ),
+      ).rejects.toThrow(RequestValidationError);
+    });
+
+    it("confirma con notas de proveedor y eventos con scope SUPPLIER cuando targetSupplier coincide", async () => {
+      const mockClient = {
+        query: vi.fn(),
+      };
+      // Idempotency: not exists
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+      // Catalog query
+      mockClient.query.mockResolvedValueOnce({
+        rows: [
+          {
+            article_id: 2222,
+            description: "ACEITE",
+            classification_code: "01",
+            supplier_code: "50350",
+            unit_measure: "UN",
+            bulto: "1",
+            stock_current: "10",
+          },
+        ],
+      });
+      // Order insert
+      mockClient.query.mockResolvedValueOnce({
+        rows: [{ id: "10", order_number: "5" }],
+      });
+      // Events insert
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+      // Order items insert
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      (withTransaction as any).mockImplementation(async (cb: any) => cb(mockClient));
+
+      const result = await confirmOrderFromExcel(
+        {
+          scope: mockScope,
+          branchId: 2,
+          planningDate: "2026-10-31",
+          items: [{ article_id: 2222, requested_quantity: 10 }],
+          idempotencyToken: "valid-sup-token",
+          actorId: "1",
+        },
+        "50350",
+      );
+
+      expect(result.created).toBe(true);
+      expect(result.id).toBe(10);
+      expect(result.order_number).toBe(5);
+
+      const orderInsert = mockClient.query.mock.calls.find((call) =>
+        typeof call[0] === "string" && call[0].includes("INSERT INTO orders"),
+      );
+      expect(orderInsert).toBeDefined();
+      expect(orderInsert![1][5]).toContain("Proveedor 50350");
+
+      const eventsInsert = mockClient.query.mock.calls.find((call) =>
+        typeof call[0] === "string" && call[0].includes("INSERT INTO order_events"),
+      );
+      expect(eventsInsert).toBeDefined();
+      expect(eventsInsert![1][1]).toContain('"scope":"SUPPLIER"');
+      expect(eventsInsert![1][1]).toContain('"supplier":"50350"');
     });
   });
 

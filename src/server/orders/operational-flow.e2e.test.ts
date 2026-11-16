@@ -272,8 +272,10 @@ class IsolatedOperationalFixture {
         destinationBranchId,
         planningDate,
         idempotencyKey,
-        actorId,
-      ] = values as [number, string, number, number, string, string, string];
+        notesOrActorId,
+        maybeActorId,
+      ] = values as [number, string, number, number, string, string, string, string?];
+      const actorId = maybeActorId !== undefined ? maybeActorId : notesOrActorId;
       const order: StoredOrder = {
         id: this.nextOrderId++,
         organizationId,

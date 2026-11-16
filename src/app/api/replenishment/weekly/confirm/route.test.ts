@@ -79,4 +79,23 @@ describe("POST /api/replenishment/weekly/confirm – idempotency_token validatio
     );
     expect(response.status).not.toBe(500);
   });
+
+  it("passes targetSupplier to confirmInternalReplenishment when supplier is provided", async () => {
+    mockConfirm.mockResolvedValueOnce({ id: 10, created: true });
+    const response = await POST(
+      makeRequest({
+        branch_id: 2,
+        planning_date: "2026-09-27",
+        items: [{ article_id: 100, requested_quantity: 10 }],
+        idempotency_token: "tok-123",
+        supplier: "50350",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSupplier: "50350",
+      }),
+    );
+  });
 });

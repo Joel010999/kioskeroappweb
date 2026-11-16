@@ -247,4 +247,73 @@ describe("confirmInternalReplenishment – idempotency token", () => {
     const eventInserts = mockQuery.mock.calls.filter((call: any[]) => call[0].includes("INSERT INTO order_events"));
     expect(eventInserts).toHaveLength(0);
   });
+
+  describe("supplier scope validation", () => {
+    it("rejects confirmation if an item belongs to a different supplier than targetSupplier", async () => {
+      mockGetWeeklyReplenishment.mockResolvedValueOnce({
+        items: [
+          { ...projectionItem, article_id: 100, supplier_code: "60642" },
+        ],
+      });
+
+      await expect(
+        confirmInternalReplenishment({
+          ...baseInput,
+          targetSupplier: "50350",
+          items: [{ article_id: 100, requested_quantity: 5 }],
+        }),
+      ).rejects.toThrow(/pertenece al proveedor 60642 y no puede confirmarse en un pedido del proveedor 50350/);
+    });
+
+    it("allows confirmation when items match targetSupplier and registers supplier in notes & event metadata", async () => {
+      setupQuery({ insertedId: "777" });
+      mockGetWeeklyReplenishment.mockResolvedValueOnce({
+        items: [
+          { ...projectionItem, article_id: 100, supplier_code: "50350" },
+        ],
+      });
+
+      const result = await confirmInternalReplenishment({
+        ...baseInput,
+        targetSupplier: "50350",
+        items: [{ article_id: 100, requested_quantity: 5 }],
+      });
+
+      expect(result).toEqual({ id: 777, created: true });
+
+      const insertCall = mockQuery.mock.calls.find(
+        (call: any[]) => call[0].includes("INSERT INTO orders"),
+      );
+      expect(insertCall).toBeDefined();
+      expect(insertCall![1]).toContain("Solicitud semanal PV a depósito - Proveedor 50350");
+
+      const eventCall = mockQuery.mock.calls.find(
+        (call: any[]) => call[0].includes("INSERT INTO order_events"),
+      );
+      expect(eventCall).toBeDefined();
+      expect(eventCall![1][1]).toContain('"supplier":"50350"');
+      expect(eventCall![1][1]).toContain('"scope":"SUPPLIER"');
+    });
+
+    it("registers general order in notes and event metadata when targetSupplier is omitted", async () => {
+      setupQuery({ insertedId: "888" });
+      mockGetWeeklyReplenishment.mockResolvedValueOnce({
+        items: [
+          { ...projectionItem, article_id: 100, supplier_code: "60642" },
+        ],
+      });
+
+      const result = await confirmInternalReplenishment({
+        ...baseInput,
+        items: [{ article_id: 100, requested_quantity: 5 }],
+      });
+
+      expect(result).toEqual({ id: 888, created: true });
+
+      const insertCall = mockQuery.mock.calls.find(
+        (call: any[]) => call[0].includes("INSERT INTO orders"),
+      );
+      expect(insertCall![1]).toContain("Solicitud semanal PV a depósito - Pedido General");
+    });
+  });
 });

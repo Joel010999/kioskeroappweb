@@ -147,6 +147,9 @@ function buildWeeklyReplenishmentQuery(params: {
   activeClause: string;
   rubroClause: string;
   supplierClause: string;
+  catalogSupplierClause?: string;
+  catalogRubroClause?: string;
+  catalogActiveClause?: string;
   sortClause: string;
   includeBaseStockTable: boolean;
   includeCutoffsTable: boolean;
@@ -167,6 +170,7 @@ function buildWeeklyReplenishmentQuery(params: {
       SELECT article_id, base_stock
       FROM branch_product_base_stock
       WHERE organization_id = $2 AND branch_id = $4
+        AND article_id IN (SELECT cp.article_id FROM catalog_products cp)
     )`
     : `, base_stock_cfg AS (
       SELECT NULL::integer AS article_id, NULL::numeric AS base_stock WHERE false
@@ -177,6 +181,7 @@ function buildWeeklyReplenishmentQuery(params: {
       SELECT article_id, cutoff_date
       FROM branch_product_history_cutoffs
       WHERE organization_id = $2 AND branch_id = $4
+        AND article_id IN (SELECT cp.article_id FROM catalog_products cp)
     )`
     : `, cutoffs_cfg AS (
       SELECT NULL::integer AS article_id, NULL::date AS cutoff_date WHERE false
@@ -200,6 +205,7 @@ function buildWeeklyReplenishmentQuery(params: {
       JOIN orders o ON o.id = oi.order_id
       WHERE o.organization_id = $2
         AND COALESCE(o.origin_branch_id, o.branch_id) = $4
+        AND oi.article_id IN (SELECT cp.article_id FROM catalog_products cp)
         AND (
           o.status IN ('CONFIRMED', 'RECEIVED_BY_WAREHOUSE', 'IN_PREPARATION', 'PARTIALLY_PREPARED', 'PREPARED')
           OR (
@@ -216,6 +222,7 @@ function buildWeeklyReplenishmentQuery(params: {
       JOIN orders o ON o.id = oi.order_id
       WHERE o.organization_id = $2
         AND o.destination_branch_id = ${DEPOT_BRANCH_ID}
+        AND oi.article_id IN (SELECT cp.article_id FROM catalog_products cp)
         AND o.status IN ('CONFIRMED', 'RECEIVED_BY_WAREHOUSE', 'IN_PREPARATION', 'PARTIALLY_PREPARED', 'PREPARED')
       GROUP BY oi.article_id
     )`
@@ -231,6 +238,22 @@ function buildWeeklyReplenishmentQuery(params: {
         date_trunc('week', $1::date)::date AS to_date,
         date_trunc('week', $1::date - interval '1 year')::date - interval '${WEEKLY_REPLENISHMENT_WEEKS} weeks' AS yoy_from_date,
         date_trunc('week', $1::date - interval '1 year')::date AS yoy_to_date
+    ), catalog_products AS (
+      SELECT DISTINCT ON (p.article_id)
+        p.article_id,
+        p.payload->>'Descripcion' AS description,
+        NULLIF(btrim(p.payload->>'Proveedor'), '') AS supplier_code,
+        p.payload->>'Clasificacion' AS classification_code,
+        ${SQL_RUBRO_EXPRESSION} AS rubro,
+        p.payload->>'UnidadMedida' AS unit_measure,
+        p.payload->>'Bulto' AS bulto_raw,
+        COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1' AS is_active
+      FROM products_raw p
+      WHERE p.organization_id = $2 AND p.source_id = $3 AND p.branch_id = $4 AND p.is_present
+        ${params.catalogActiveClause ?? ""}
+        ${params.catalogRubroClause ?? ""}
+        ${params.catalogSupplierClause ?? ""}
+      ORDER BY p.article_id, p.is_present DESC
     ), sales AS (
       SELECT btrim(m.idarti)::integer AS article_id, date_trunc('week', m.fedepo::timestamp)::date AS week_start, SUM(m.cantidad) AS quantity
       FROM stock_movements_raw m
@@ -238,6 +261,7 @@ function buildWeeklyReplenishmentQuery(params: {
       ${cutoffJoin}
       WHERE m.organization_id = $2 AND m.source_id = $3 AND m.branch_id = $4
         AND btrim(m.idarti) ~ '^[0-9]+$'
+        AND btrim(m.idarti)::integer IN (SELECT cp.article_id FROM catalog_products cp)
         AND TRIM(m.tipomov) = 'VT' AND TRIM(m.codcom) IN ('TICK', 'PRES', 'FACV')
         AND ((m.fedepo::timestamp >= w.from_date AND m.fedepo::timestamp < w.to_date) OR (m.fedepo::timestamp >= w.yoy_from_date AND m.fedepo::timestamp < w.yoy_to_date))
         ${cutoffSalesFilter}
@@ -249,6 +273,7 @@ function buildWeeklyReplenishmentQuery(params: {
       ${cutoffJoin}
       WHERE m.organization_id = $2 AND m.source_id = $3 AND m.branch_id = $4
         AND btrim(m.idarti) ~ '^[0-9]+$'
+        AND btrim(m.idarti)::integer IN (SELECT cp.article_id FROM catalog_products cp)
         AND TRIM(m.tipomov) = 'VT' AND TRIM(m.codcom) IN ('TICK', 'PRES', 'FACV') AND m.fedepo::timestamp < w.to_date
         ${cutoffSalesFilter}
     ), weeks AS (
@@ -257,10 +282,14 @@ function buildWeeklyReplenishmentQuery(params: {
       SELECT generate_series(w.yoy_from_date, w.yoy_to_date - interval '1 week', interval '1 week')::date AS week_start FROM analysis_window w
     ), stock_pv AS (
       SELECT article_id, SUM(saldo) AS current_stock FROM stock_levels_raw
-      WHERE organization_id = $2 AND source_id = $3 AND branch_id = $4 GROUP BY article_id
+      WHERE organization_id = $2 AND source_id = $3 AND branch_id = $4
+        AND article_id IN (SELECT cp.article_id FROM catalog_products cp)
+      GROUP BY article_id
     ), stock_depot AS (
       SELECT article_id, SUM(saldo) AS depot_stock FROM stock_levels_raw
-      WHERE organization_id = $2 AND source_id = $5 AND branch_id = ${DEPOT_BRANCH_ID} GROUP BY article_id
+      WHERE organization_id = $2 AND source_id = $5 AND branch_id = ${DEPOT_BRANCH_ID}
+        AND article_id IN (SELECT cp.article_id FROM catalog_products cp)
+      GROUP BY article_id
     )${baseStockCte}${cutoffsCte}${ordersCtes}, current_metrics AS (
       SELECT a.article_id, COUNT(*) FILTER (WHERE COALESCE(s.quantity, 0) > 0) AS active_weeks,
         percentile_cont(.5) WITHIN GROUP (ORDER BY COALESCE(s.quantity, 0)) AS weekly_demand,
@@ -274,19 +303,6 @@ function buildWeeklyReplenishmentQuery(params: {
     ), metrics AS (
       SELECT cm.article_id, cm.active_weeks, GREATEST(cm.weekly_demand, COALESCE(ym.weekly_demand_yoy, 0)) AS weekly_demand, cm.weekly_average, cm.weekly_max, cm.weekly_min
       FROM current_metrics cm LEFT JOIN yoy_metrics ym ON ym.article_id = cm.article_id
-    ), catalog_products AS (
-      SELECT DISTINCT ON (p.article_id)
-        p.article_id,
-        p.payload->>'Descripcion' AS description,
-        NULLIF(btrim(p.payload->>'Proveedor'), '') AS supplier_code,
-        p.payload->>'Clasificacion' AS classification_code,
-        ${SQL_RUBRO_EXPRESSION} AS rubro,
-        p.payload->>'UnidadMedida' AS unit_measure,
-        p.payload->>'Bulto' AS bulto_raw,
-        COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1' AS is_active
-      FROM products_raw p
-      WHERE p.organization_id = $2 AND p.source_id = $3 AND p.branch_id = $4 AND p.is_present
-      ORDER BY p.article_id, p.is_present DESC
     ), items_base AS (
       SELECT
         p.article_id,
@@ -437,28 +453,39 @@ export async function getWeeklyReplenishment(options: {
   ];
 
   let rubroClause = "";
+  let catalogRubroClause = "";
   if (
     options.rubro === "__SIN_RUBRO__" ||
     options.rubro === "SIN_RUBRO" ||
     options.rubro === "SIN RUBRO"
   ) {
     rubroClause = "AND (rubro IS NULL OR rubro = '' OR rubro = 'SIN RUBRO')";
+    catalogRubroClause = `AND (${SQL_RUBRO_EXPRESSION} IS NULL OR ${SQL_RUBRO_EXPRESSION} = '' OR ${SQL_RUBRO_EXPRESSION} = 'SIN RUBRO')`;
   } else if (options.rubro) {
     values.push(options.rubro);
     rubroClause = `AND rubro = $${values.length}`;
+    catalogRubroClause = `AND ${SQL_RUBRO_EXPRESSION} = $${values.length}`;
   }
 
   let supplierClause = "";
+  let catalogSupplierClause = "";
   if (
     options.supplier === "__SIN_PROVEEDOR__" ||
     options.supplier === "SIN_PROVEEDOR" ||
     options.supplier === "SIN PROVEEDOR"
   ) {
     supplierClause = "AND (supplier_code IS NULL OR supplier_code = '' OR supplier_code = 'SIN PROVEEDOR')";
+    catalogSupplierClause = "AND (NULLIF(btrim(p.payload->>'Proveedor'), '') IS NULL OR btrim(p.payload->>'Proveedor') = 'SIN PROVEEDOR')";
   } else if (options.supplier) {
     values.push(options.supplier);
     supplierClause = `AND supplier_code = $${values.length}`;
+    catalogSupplierClause = `AND NULLIF(btrim(p.payload->>'Proveedor'), '') = $${values.length}`;
   }
+
+  const catalogActiveClause =
+    options.filter === "INACTIVE" || options.includeInactive
+      ? ""
+      : "AND COALESCE(NULLIF(btrim(p.payload->>'Estado'), ''), '1') = '1'";
 
   let includeBaseStockTable = true;
   let includeCutoffsTable = true;
@@ -472,6 +499,9 @@ export async function getWeeklyReplenishment(options: {
         activeClause,
         rubroClause,
         supplierClause,
+        catalogActiveClause,
+        catalogRubroClause,
+        catalogSupplierClause,
         sortClause,
         includeBaseStockTable,
         includeCutoffsTable,

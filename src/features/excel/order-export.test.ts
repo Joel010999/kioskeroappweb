@@ -712,6 +712,65 @@ describe("Excel Export Module", () => {
       expect(exported[0].article_id).toBe(4001);
     });
 
+    it("filters strictly by targetSupplier when specified", () => {
+      const items: RawReplenishmentItem[] = [
+        {
+          article_id: 5001,
+          description: "PRODUCTO PROV 50350",
+          rubro: "GOLOSINAS",
+          classification_code: "001",
+          stock_current: 2,
+          stock_depot: 20,
+          suggested_quantity: 5,
+          requested_quantity: 5,
+          supply_mode: "DEPOT",
+          supplier_code: "50350",
+        },
+        {
+          article_id: 5002,
+          description: "PRODUCTO OTRO PROVEEDOR 60642",
+          rubro: "GOLOSINAS",
+          classification_code: "001",
+          stock_current: 5,
+          stock_depot: 10,
+          suggested_quantity: 4,
+          requested_quantity: 4,
+          supply_mode: "DEPOT",
+          supplier_code: "60642",
+        },
+        {
+          article_id: 5003,
+          description: "PRODUCTO SIN PROVEEDOR",
+          rubro: "GOLOSINAS",
+          classification_code: "001",
+          stock_current: 0,
+          stock_depot: 15,
+          suggested_quantity: 2,
+          requested_quantity: 2,
+          supply_mode: "DEPOT",
+          supplier_code: null,
+        },
+      ];
+
+      const exported50350 = collectRubroExportItems({
+        items,
+        branchId,
+        planningDate,
+        targetSupplier: "50350",
+      });
+      expect(exported50350).toHaveLength(1);
+      expect(exported50350[0].article_id).toBe(5001);
+
+      const exportedSinProv = collectRubroExportItems({
+        items,
+        branchId,
+        planningDate,
+        targetSupplier: "__SIN_PROVEEDOR__",
+      });
+      expect(exportedSinProv).toHaveLength(1);
+      expect(exportedSinProv[0].article_id).toBe(5003);
+    });
+
     it("exact reproduction: exports all 75 products of CHOCOLATES across two pages for branch Centro in a single Excel workbook", () => {
       // 75 products total in CHOCOLATES for Centro
       const page1: RawReplenishmentItem[] = Array.from({ length: 50 }, (_, i) => ({

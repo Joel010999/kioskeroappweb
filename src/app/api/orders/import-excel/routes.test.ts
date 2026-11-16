@@ -106,6 +106,45 @@ describe("API Routes: /api/orders/import-excel", () => {
       expect(json.items[0].articleId).toBe(2222);
       expect(json.fileHash).toBe("hash-123");
     });
+
+    it("pasa targetSupplier a validateExcelAgainstCatalog cuando se especifica en preview", async () => {
+      (getAuthorizedContext as any).mockResolvedValueOnce({
+        userId: 1,
+        organizationId: 1,
+        memberships: [{ role: "PV_OPERATOR", branchId: 2 }],
+      });
+      (getAuthorizedScope as any).mockResolvedValueOnce({
+        scope: { organizationId: 1, sourceId: "pv", branchId: 2 },
+      });
+      (canConfirmReplenishment as any).mockReturnValueOnce(true);
+
+      (parseOrderExcel as any).mockReturnValueOnce({
+        fileHash: "hash123",
+        sheetName: "Hoja1",
+        columnsDetected: { codeColumn: "CÓDIGO", descriptionColumn: "DESCRIPCIÓN", quantityColumn: "PEDIDO" },
+        rows: [{ rowNumber: 2, rawCode: "1001", rawDescription: "Alfajor", parsedQuantity: 10, articleId: 1001 }],
+      });
+
+      (validateExcelAgainstCatalog as any).mockResolvedValueOnce({
+        summary: { totalRows: 1, validRows: 1, warningRows: 0, errorRows: 0, totalUnits: 10 },
+        items: [{ articleId: 1001, requestedQuantity: 10, status: "VALID" }],
+        unmatchedRows: [],
+      });
+
+      const req = new NextRequest("http://localhost:3000/api/orders/import-excel/preview?supplier=50350", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fileBase64: Buffer.from("data").toString("base64") }),
+      });
+
+      const res = await previewHandler(req);
+      expect(res.status).toBe(200);
+      expect(validateExcelAgainstCatalog).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({ branchId: 2 }),
+        "50350",
+      );
+    });
   });
 
   describe("POST /api/orders/import-excel/confirm", () => {
@@ -144,6 +183,46 @@ describe("API Routes: /api/orders/import-excel", () => {
       const json = await res.json();
       expect(json.created).toBe(true);
       expect(json.order_number).toBe(3);
+    });
+
+    it("pasa targetSupplier a confirmOrderFromExcel cuando se incluye en confirm", async () => {
+      (getAuthorizedContext as any).mockResolvedValueOnce({
+        userId: 1,
+        organizationId: 1,
+        memberships: [{ role: "PV_OPERATOR", branchId: 2 }],
+      });
+      (getAuthorizedScope as any).mockResolvedValueOnce({
+        scope: { organizationId: 1, sourceId: "pv", branchId: 2 },
+      });
+      (canConfirmReplenishment as any).mockReturnValueOnce(true);
+
+      (confirmOrderFromExcel as any).mockResolvedValueOnce({
+        id: 26,
+        order_number: 4,
+        total_units: 12,
+        items_count: 1,
+        created: true,
+      });
+
+      const req = new NextRequest("http://localhost:3000/api/orders/import-excel/confirm", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          branch_id: 2,
+          planning_date: "2026-10-31",
+          items: [{ article_id: 2222, requested_quantity: 12 }],
+          idempotency_token: "token-abc-2",
+          supplier: "50350",
+        }),
+      });
+
+      const res = await confirmHandler(req);
+      expect(res.status).toBe(200);
+      expect(confirmOrderFromExcel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          targetSupplier: "50350",
+        }),
+      );
     });
   });
 

@@ -16,6 +16,10 @@ export async function POST(request: NextRequest) {
     let buffer: Buffer;
     let filename = "pedido.xlsx";
     let requestedBranchId: number | undefined;
+    let targetSupplier: string | undefined =
+      request.nextUrl.searchParams.get("supplier")?.trim() ||
+      request.nextUrl.searchParams.get("target_supplier")?.trim() ||
+      undefined;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
@@ -27,6 +31,10 @@ export async function POST(request: NextRequest) {
       const branchField = formData.get("branch_id");
       if (branchField) {
         requestedBranchId = parseOptionalPositiveInteger(String(branchField), "branch_id");
+      }
+      const supField = formData.get("supplier") || formData.get("target_supplier");
+      if (supField) {
+        targetSupplier = String(supField).trim() || undefined;
       }
       const arrayBuffer = await file.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
@@ -42,6 +50,10 @@ export async function POST(request: NextRequest) {
       if (body.branch_id) {
         requestedBranchId = parseOptionalPositiveInteger(String(body.branch_id), "branch_id");
       }
+      const supField = body.supplier || body.target_supplier;
+      if (supField) {
+        targetSupplier = String(supField).trim() || undefined;
+      }
       buffer = Buffer.from(body.fileBase64, "base64");
     }
 
@@ -55,8 +67,8 @@ export async function POST(request: NextRequest) {
     // 1. Parsear el archivo Excel
     const parsed = parseOrderExcel(buffer, filename);
 
-    // 2. Validar contra el catálogo de la sucursal
-    const validated = await validateExcelAgainstCatalog(parsed.rows, scope);
+    // 2. Validar contra el catálogo de la sucursal (restringiendo al proveedor si fue especificado)
+    const validated = await validateExcelAgainstCatalog(parsed.rows, scope, targetSupplier);
 
     return {
       filename,
@@ -67,6 +79,7 @@ export async function POST(request: NextRequest) {
       items: validated.items,
       unmatchedRows: validated.unmatchedRows,
       branchId: scope.branchId,
+      targetSupplier: targetSupplier || null,
     };
   });
 }

@@ -309,6 +309,7 @@ export function ReplenishmentReviewClient({
       : null;
 
   const handlePlanningDateChange = (newDate: string) => {
+    setLoading(true);
     setPlanningDate(newDate);
     setPage(1);
     const draft = readDraftFromStorage(branchId, newDate);
@@ -533,6 +534,7 @@ export function ReplenishmentReviewClient({
     setter: (value: T) => void,
     value: T,
   ) => {
+    setLoading(true);
     setter(value);
     setPage(1);
   };
@@ -553,6 +555,27 @@ export function ReplenishmentReviewClient({
         (item.supply_mode === "DEPOT" || item.supply_mode === "UNDEFINED"),
     )
     .map(([, item]) => item);
+
+  const activeOrderSelections = useMemo(() => {
+    if (!supplier) {
+      return globalSelections;
+    }
+    return globalSelections.filter((sel) => {
+      const meta = itemRegistry[sel.article_id];
+      const supCode =
+        meta?.supplier_code ??
+        data?.items.find((i) => i.article_id === sel.article_id)?.supplier_code ??
+        null;
+      if (supplier === "__SIN_PROVEEDOR__") {
+        return (
+          !supCode ||
+          supCode === "SIN PROVEEDOR" ||
+          supCode === "__SIN_PROVEEDOR__"
+        );
+      }
+      return supCode?.trim() === supplier.trim();
+    });
+  }, [globalSelections, supplier, itemRegistry, data]);
 
   const globalEditedCount = Object.keys(edited).filter(
     (key) =>
@@ -821,11 +844,17 @@ export function ReplenishmentReviewClient({
 
   const openConfirmModal = () => {
     if (!data) return;
-    const items = globalSelections.filter(
+    const items = activeOrderSelections.filter(
       (item) => item.requested_quantity > 0,
     );
     if (!items.length) {
-      alert("No hay productos seleccionados con cantidad mayor a 0 para solicitar.");
+      alert(
+        supplier
+          ? `No hay productos seleccionados con cantidad mayor a 0 para el proveedor ${
+              supplier === "__SIN_PROVEEDOR__" ? "Sin proveedor" : supplier
+            }.`
+          : "No hay productos seleccionados con cantidad mayor a 0 para solicitar.",
+      );
       return;
     }
     setShowConfirmModal(true);
@@ -833,7 +862,7 @@ export function ReplenishmentReviewClient({
 
   const executeConfirm = async () => {
     if (!data) return;
-    const items = globalSelections.filter(
+    const items = activeOrderSelections.filter(
       (item) => item.requested_quantity > 0,
     );
     if (!items.length) return;
@@ -845,6 +874,7 @@ export function ReplenishmentReviewClient({
         body: JSON.stringify({
           branch_id: Number(branchId),
           planning_date: planningDate,
+          supplier: supplier || undefined,
           items,
           idempotency_token: makeIdempotencyToken(branchId, planningDate),
         }),
@@ -862,10 +892,23 @@ export function ReplenishmentReviewClient({
         branchId,
         planningDate,
       });
-      try {
-        localStorage.removeItem(draftStorageKey(branchId, planningDate));
-      } catch {}
-      setDraftRestored(false);
+
+      if (!supplier) {
+        try {
+          localStorage.removeItem(draftStorageKey(branchId, planningDate));
+        } catch {}
+        setDraftRestored(false);
+      } else {
+        setSelectedItems((prev) => {
+          const next = { ...prev };
+          for (const it of items) {
+            const key = requestedKey(branchId, planningDate, it.article_id);
+            delete next[key];
+          }
+          return next;
+        });
+      }
+
       setShowConfirmModal(false);
       setError(null);
       setAuthError(false);
@@ -877,7 +920,7 @@ export function ReplenishmentReviewClient({
   };
 
   const handleExport = async (
-    mode: "selected" | "filtered" | "rubro" | "visible",
+    mode: "selected" | "filtered" | "rubro" | "visible" | "all_selected",
   ) => {
     if (!data) return;
     setExporting(true);
@@ -931,15 +974,22 @@ export function ReplenishmentReviewClient({
           branchId,
           planningDate,
           targetRubro: currentRubro || null,
+          targetSupplier: supplier || null,
           requestedMap: requested,
           selectedMap: selected,
         });
 
         if (exportList.length === 0) {
           alert(
-            currentRubro
-              ? `No hay productos seleccionados con cantidad mayor a 0 para exportar en el rubro ${isSinRubro(currentRubro) ? "Sin rubro" : currentRubro}.`
-              : "No hay productos seleccionados con cantidad mayor a 0 para exportar.",
+            supplier
+              ? `No hay productos seleccionados con cantidad mayor a 0 para exportar del proveedor ${
+                  supplier === "__SIN_PROVEEDOR__" ? "Sin proveedor" : supplier
+                }.`
+              : currentRubro
+                ? `No hay productos seleccionados con cantidad mayor a 0 para exportar en el rubro ${
+                    isSinRubro(currentRubro) ? "Sin rubro" : currentRubro
+                  }.`
+                : "No hay productos seleccionados con cantidad mayor a 0 para exportar.",
           );
           return;
         }
@@ -949,6 +999,16 @@ export function ReplenishmentReviewClient({
             ? "SIN_RUBRO"
             : currentRubro.replace(/\s+/g, "_")
           : "COMPLETO";
+        const cleanSupplier = supplier
+          ? supplier === "__SIN_PROVEEDOR__"
+            ? "SIN_PROV"
+            : `PROV_${supplier}`
+          : "";
+        const titleSupplier = supplier
+          ? supplier === "__SIN_PROVEEDOR__"
+            ? " · Sin proveedor"
+            : ` · Proveedor ${supplier}`
+          : "";
         const cleanBranch = branchName.replace(/\s+/g, "_");
 
         downloadReplenishmentExcel({
@@ -956,12 +1016,14 @@ export function ReplenishmentReviewClient({
           branchLabel: branchName,
           planningDate,
           title: currentRubro
-            ? `Pedido a Depósito - ${isSinRubro(currentRubro) ? "Sin rubro" : currentRubro}`
-            : "Pedido a Depósito Filtrado",
-          filename: `REPOSICION_${cleanRubro}_${cleanBranch}_${planningDate}.xlsx`,
+            ? `Pedido a Depósito - ${isSinRubro(currentRubro) ? "Sin rubro" : currentRubro}${titleSupplier}`
+            : `Pedido a Depósito Filtrado${titleSupplier}`,
+          filename: `REPOSICION_${cleanSupplier ? cleanSupplier + "_" : ""}${cleanRubro}_${cleanBranch}_${planningDate}.xlsx`,
         });
-      } else if (mode === "selected") {
-        const exportList: ReplenishmentExportItem[] = globalSelections
+      } else if (mode === "selected" || mode === "all_selected") {
+        const isAll = mode === "all_selected" || !supplier;
+        const targetSelections = isAll ? globalSelections : activeOrderSelections;
+        const exportList: ReplenishmentExportItem[] = targetSelections
           .map((sel) => {
             const meta = itemRegistry[sel.article_id];
             return {
@@ -989,16 +1051,35 @@ export function ReplenishmentReviewClient({
           );
 
         if (exportList.length === 0) {
-          alert("No hay productos con cantidad solicitada mayor a 0 para exportar.");
+          alert(
+            !isAll
+              ? `No hay productos con cantidad solicitada mayor a 0 para el proveedor ${
+                  supplier === "__SIN_PROVEEDOR__" ? "Sin proveedor" : supplier
+                }.`
+              : "No hay productos con cantidad solicitada mayor a 0 para exportar.",
+          );
           return;
         }
+
+        const cleanBranch = branchName.replace(/\s+/g, "_");
+        const cleanSupplier = supplier
+          ? supplier === "__SIN_PROVEEDOR__"
+            ? "SIN_PROV"
+            : `PROV_${supplier}`
+          : "";
 
         downloadReplenishmentExcel({
           items: exportList,
           branchLabel: branchName,
           planningDate,
-          title: "Pedido a Depósito Completo",
-          filename: `PEDIDO_COMPLETO_${branchName.replace(/\s+/g, "_")}_${planningDate}.xlsx`,
+          title: !isAll
+            ? `Pedido a Depósito - Proveedor ${
+                supplier === "__SIN_PROVEEDOR__" ? "Sin proveedor" : supplier
+              }`
+            : "Pedido a Depósito Completo",
+          filename: !isAll
+            ? `PEDIDO_${cleanSupplier}_${cleanBranch}_${planningDate}.xlsx`
+            : `PEDIDO_COMPLETO_${cleanBranch}_${planningDate}.xlsx`,
         });
       }
       setShowExportModal(false);
@@ -1139,7 +1220,12 @@ export function ReplenishmentReviewClient({
           </select>
         </label>
 
-        {data && (
+        {loading ? (
+          <span style={{ color: "#64748b", display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+            <span style={{ animation: "spin 1s infinite linear", display: "inline-block" }}>⏳</span>
+            Cargando productos relevantes...
+          </span>
+        ) : data ? (
           <span>
             {units.format(data.total)} productos relevantes en{" "}
             {data.location.label}
@@ -1152,7 +1238,7 @@ export function ReplenishmentReviewClient({
                 }`
               : ""}
           </span>
-        )}
+        ) : null}
 
         <div className="review-actions-group">
           {/* Restore All Suggestions Button */}
@@ -1268,9 +1354,9 @@ export function ReplenishmentReviewClient({
       {!loading && data && (
         <section className="replenishment-note">
           <strong>
-            {globalSelections.length} productos para depósito ·{" "}
+            {activeOrderSelections.length} productos {supplier ? `de ${supplier === "__SIN_PROVEEDOR__" ? "Sin proveedor" : `Proveedor ${supplier}`}` : "para depósito (Pedido general)"} ·{" "}
             {units.format(
-              globalSelections.reduce(
+              activeOrderSelections.reduce(
                 (sum, item) => sum + item.requested_quantity,
                 0,
               ),
@@ -1281,11 +1367,18 @@ export function ReplenishmentReviewClient({
             {globalEditedCount
               ? `${globalEditedCount} cantidades modificadas manualmente. `
               : ""}
-            El cálculo combina demanda de 10 días y{" "}
-            <Link className="order-link" href="/base-stock">
-              Stock base por sucursal
-            </Link>
-            , descontando stock actual y pedidos en curso.
+            {supplier
+              ? `Pedido específico restringido a ${
+                  supplier === "__SIN_PROVEEDOR__"
+                    ? "artículos sin proveedor"
+                    : `Proveedor ${supplier}`
+                }.`
+              : "El cálculo combina demanda de 10 días y Stock base por sucursal, descontando stock actual."}
+            {supplier && globalSelections.length > activeOrderSelections.length && (
+              <span style={{ display: "block", marginTop: "0.25rem", color: "#64748b" }}>
+                (Tenés {globalSelections.length - activeOrderSelections.length} productos de otros proveedores en tu borrador que no se incluirán en este pedido)
+              </span>
+            )}
           </span>
         </section>
       )}
@@ -1367,7 +1460,40 @@ export function ReplenishmentReviewClient({
           <div className="skeleton" />
         </div>
       ) : data ? (
-        <section className="review-table-panel">
+        <section className="review-table-panel" style={{ position: "relative" }}>
+          {loading && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(255, 255, 255, 0.75)",
+                backdropFilter: "blur(2px)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                zIndex: 10,
+                borderRadius: "12px",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.6rem",
+                  fontWeight: 600,
+                  color: "#0f172a",
+                  background: "#ffffff",
+                  padding: "0.85rem 1.4rem",
+                  borderRadius: "8px",
+                  boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)",
+                  border: "1px solid #e2e8f0",
+                }}
+              >
+                <span style={{ fontSize: "1.2rem", animation: "spin 1s infinite linear", display: "inline-block" }}>⏳</span>
+                <span>Actualizando catálogo según proveedor y filtros...</span>
+              </div>
+            </div>
+          )}
           <div className="review-table-wrap">
             <table className="review-table">
               <thead>
@@ -1597,13 +1723,22 @@ export function ReplenishmentReviewClient({
               Tus cambios se guardan automáticamente en este navegador hasta confirmar.
             </span>
             <div className="pagination-controls">
-              <button disabled={page === 1} onClick={() => setPage(page - 1)}>
+              <button
+                disabled={page === 1}
+                onClick={() => {
+                  setLoading(true);
+                  setPage(page - 1);
+                }}
+              >
                 Anterior
               </button>
               <span>Página {page}</span>
               <button
                 disabled={page * data.page_size >= data.total}
-                onClick={() => setPage(page + 1)}
+                onClick={() => {
+                  setLoading(true);
+                  setPage(page + 1);
+                }}
               >
                 Siguiente
               </button>
@@ -1633,37 +1768,145 @@ export function ReplenishmentReviewClient({
               </p>
             </div>
             <div className="export-modal-options">
-              <button
-                type="button"
-                className="export-option-btn"
-                disabled={exporting}
-                onClick={() => void handleExport("selected")}
-              >
-                <strong>
-                  {exporting
-                    ? "⏳ Exportando pedido completo..."
-                    : "1. Exportar pedido completo (Recomendado)"}
-                </strong>
-                <span>
-                  Incluye todos los <strong>{globalSelections.length} productos</strong> marcados para depósito ({units.format(globalSelections.reduce((sum, item) => sum + item.requested_quantity, 0))} unidades totales), sin importar el rubro o página actual.
-                </span>
-              </button>
+              {supplier ? (
+                <>
+                  <button
+                    type="button"
+                    className="export-option-btn"
+                    disabled={exporting}
+                    onClick={() => void handleExport("selected")}
+                  >
+                    <strong>
+                      {exporting
+                        ? "⏳ Exportando pedido del proveedor..."
+                        : `1. Exportar pedido de Proveedor ${
+                            supplier === "__SIN_PROVEEDOR__"
+                              ? "Sin proveedor"
+                              : supplier
+                          } (Recomendado)`}
+                    </strong>
+                    <span>
+                      Incluye los{" "}
+                      <strong>
+                        {activeOrderSelections.length} productos
+                      </strong>{" "}
+                      de este proveedor marcados para depósito (
+                      {units.format(
+                        activeOrderSelections.reduce(
+                          (sum, item) => sum + item.requested_quantity,
+                          0,
+                        ),
+                      )}{" "}
+                      unidades totales).
+                    </span>
+                  </button>
 
-              <button
-                type="button"
-                className="export-option-btn"
-                disabled={exporting}
-                onClick={() => void handleExport("filtered")}
-              >
-                <strong>
-                  {exporting
-                    ? "⏳ Exportando productos filtrados (todas las páginas)..."
-                    : "2. Exportar productos filtrados de esta vista"}
-                </strong>
-                <span>
-                  Exporta los <strong>{data ? units.format(data.total) : 0} artículos</strong> correspondientes a esta vista filtrada{rubro ? ` (Rubro: ${isSinRubro(rubro) ? "Sin rubro" : rubro})` : ""}, a lo largo de todas sus páginas, respetando tus cantidades solicitadas y excluyendo los destildados.
-                </span>
-              </button>
+                  <button
+                    type="button"
+                    className="export-option-btn"
+                    disabled={exporting}
+                    onClick={() => void handleExport("filtered")}
+                  >
+                    <strong>
+                      {exporting
+                        ? "⏳ Exportando productos filtrados (todas las páginas)..."
+                        : "2. Exportar productos filtrados de esta vista"}
+                    </strong>
+                    <span>
+                      Exporta los{" "}
+                      <strong>
+                        {data ? units.format(data.total) : 0} artículos
+                      </strong>{" "}
+                      correspondientes a esta vista filtrada (Proveedor:{" "}
+                      {supplier === "__SIN_PROVEEDOR__"
+                        ? "Sin proveedor"
+                        : supplier}
+                      {rubro
+                        ? `, Rubro: ${isSinRubro(rubro) ? "Sin rubro" : rubro}`
+                        : ""}
+                      ), a lo largo de todas sus páginas, respetando tus
+                      cantidades solicitadas.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="export-option-btn"
+                    disabled={exporting}
+                    onClick={() => void handleExport("all_selected")}
+                  >
+                    <strong>
+                      {exporting
+                        ? "⏳ Exportando pedido general completo..."
+                        : "3. Exportar pedido general completo (Todos los proveedores)"}
+                    </strong>
+                    <span>
+                      Incluye todos los{" "}
+                      <strong>{globalSelections.length} productos</strong>{" "}
+                      guardados en tu borrador (
+                      {units.format(
+                        globalSelections.reduce(
+                          (sum, item) => sum + item.requested_quantity,
+                          0,
+                        ),
+                      )}{" "}
+                      unidades totales de todos los proveedores).
+                    </span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="export-option-btn"
+                    disabled={exporting}
+                    onClick={() => void handleExport("selected")}
+                  >
+                    <strong>
+                      {exporting
+                        ? "⏳ Exportando pedido completo..."
+                        : "1. Exportar pedido completo (Recomendado)"}
+                    </strong>
+                    <span>
+                      Incluye todos los{" "}
+                      <strong>{globalSelections.length} productos</strong>{" "}
+                      marcados para depósito (
+                      {units.format(
+                        globalSelections.reduce(
+                          (sum, item) => sum + item.requested_quantity,
+                          0,
+                        ),
+                      )}{" "}
+                      unidades totales), sin importar el rubro o página actual.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="export-option-btn"
+                    disabled={exporting}
+                    onClick={() => void handleExport("filtered")}
+                  >
+                    <strong>
+                      {exporting
+                        ? "⏳ Exportando productos filtrados (todas las páginas)..."
+                        : "2. Exportar productos filtrados de esta vista"}
+                    </strong>
+                    <span>
+                      Exporta los{" "}
+                      <strong>
+                        {data ? units.format(data.total) : 0} artículos
+                      </strong>{" "}
+                      correspondientes a esta vista filtrada
+                      {rubro
+                        ? ` (Rubro: ${isSinRubro(rubro) ? "Sin rubro" : rubro})`
+                        : ""}
+                      , a lo largo de todas sus páginas, respetando tus
+                      cantidades solicitadas y excluyendo los destildados.
+                    </span>
+                  </button>
+                </>
+              )}
             </div>
             <div className="export-modal-footer">
               <button
@@ -1693,10 +1936,37 @@ export function ReplenishmentReviewClient({
           >
             <div className="confirm-modal-header">
               <h2 id="confirm-modal-title">
-                📋 Revisar pedido antes de confirmar
+                📋 Revisar pedido{" "}
+                {supplier
+                  ? `(Proveedor ${
+                      supplier === "__SIN_PROVEEDOR__"
+                        ? "Sin proveedor"
+                        : supplier
+                    })`
+                  : "general"}{" "}
+                antes de confirmar
               </h2>
               <p>
                 {branchName} · Planificación {planningDate}
+                {supplier && (
+                  <span
+                    style={{
+                      display: "inline-block",
+                      marginLeft: "0.5rem",
+                      background: "#f0fdf4",
+                      color: "#166534",
+                      padding: "0.15rem 0.5rem",
+                      borderRadius: "4px",
+                      fontWeight: 600,
+                      fontSize: "0.82rem",
+                    }}
+                  >
+                    Alcance: Proveedor{" "}
+                    {supplier === "__SIN_PROVEEDOR__"
+                      ? "Sin proveedor"
+                      : supplier}
+                  </span>
+                )}
               </p>
             </div>
 
@@ -1705,8 +1975,9 @@ export function ReplenishmentReviewClient({
                 <span>Productos a solicitar</span>
                 <strong>
                   {
-                    globalSelections.filter((s) => s.requested_quantity > 0)
-                      .length
+                    activeOrderSelections.filter(
+                      (s) => s.requested_quantity > 0,
+                    ).length
                   }
                 </strong>
               </div>
@@ -1714,7 +1985,7 @@ export function ReplenishmentReviewClient({
                 <span>Unidades totales</span>
                 <strong>
                   {units.format(
-                    globalSelections.reduce(
+                    activeOrderSelections.reduce(
                       (sum, item) => sum + item.requested_quantity,
                       0,
                     ),
@@ -1722,10 +1993,26 @@ export function ReplenishmentReviewClient({
                   u.
                 </strong>
               </div>
+              {supplier && (
+                <div
+                  className="confirm-pill"
+                  style={{ background: "#f0fdf4", borderColor: "#bbf7d0" }}
+                >
+                  <span>Proveedor</span>
+                  <strong style={{ color: "#166534" }}>
+                    {supplier === "__SIN_PROVEEDOR__"
+                      ? "Sin proveedor"
+                      : `Proveedor ${supplier}`}
+                  </strong>
+                </div>
+              )}
               <div className="confirm-pill-info">
                 <span>ℹ️ Unidades y bultos</span>
                 <p>
-                  Las cantidades se registran en <strong>unidades individuales</strong>. A continuación podés verificar la presentación comercial de cada artículo (Bulto o Unidad) y el stock disponible en el depósito.
+                  Las cantidades se registran en{" "}
+                  <strong>unidades individuales</strong>. A continuación podés
+                  verificar la presentación comercial de cada artículo (Bulto o
+                  Unidad) y el stock disponible en el depósito.
                 </p>
               </div>
             </div>
@@ -1742,7 +2029,7 @@ export function ReplenishmentReviewClient({
                   </tr>
                 </thead>
                 <tbody>
-                  {globalSelections
+                  {activeOrderSelections
                     .filter((sel) => sel.requested_quantity > 0)
                     .map((sel) => {
                       const meta = itemRegistry[sel.article_id];
@@ -1757,7 +2044,8 @@ export function ReplenishmentReviewClient({
                         <tr key={sel.article_id}>
                           <td>
                             <strong>
-                              {meta?.description || `Artículo #${sel.article_id}`}
+                              {meta?.description ||
+                                `Artículo #${sel.article_id}`}
                             </strong>
                             <small>
                               #{sel.article_id}
@@ -1821,7 +2109,13 @@ export function ReplenishmentReviewClient({
               >
                 {confirming
                   ? "Confirmando solicitud..."
-                  : "✓ Confirmar y enviar pedido definitivo"}
+                  : supplier
+                    ? `✓ Confirmar pedido de Proveedor ${
+                        supplier === "__SIN_PROVEEDOR__"
+                          ? "Sin proveedor"
+                          : supplier
+                      }`
+                    : "✓ Confirmar y enviar pedido general"}
               </button>
             </div>
           </div>
@@ -1903,6 +2197,7 @@ export function ReplenishmentReviewClient({
         onClose={() => setShowImportExcelModal(false)}
         branchId={Number(branchId)}
         planningDate={planningDate}
+        selectedSupplier={supplier || undefined}
         onOrderCreated={(orderId, orderNumber) => {
           setConfirmedOrder(orderNumber);
           setConfirmedOrderId(orderId);

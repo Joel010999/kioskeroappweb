@@ -10,10 +10,11 @@ type ExcelImportModalProps = {
   onClose: () => void;
   branchId: number;
   planningDate: string;
+  selectedSupplier?: string;
   onOrderCreated?: (orderId: number, orderNumber: number) => void;
 };
 
-type ViewTab = "ALL" | "VALID" | "WARNINGS" | "ERRORS";
+type ViewTab = "ALL" | "VALID" | "WARNINGS" | "INCOMPATIBLE" | "ERRORS";
 
 const unitsFmt = new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 });
 
@@ -22,6 +23,7 @@ export function ExcelImportModal({
   onClose,
   branchId,
   planningDate,
+  selectedSupplier,
   onOrderCreated,
 }: ExcelImportModalProps) {
   const router = useRouter();
@@ -102,6 +104,9 @@ export function ExcelImportModal({
       const formData = new FormData();
       formData.append("file", file);
       formData.append("branch_id", String(branchId));
+      if (selectedSupplier) {
+        formData.append("supplier", selectedSupplier);
+      }
 
       const res = await fetch("/api/orders/import-excel/preview", {
         method: "POST",
@@ -179,15 +184,40 @@ export function ExcelImportModal({
 
   // Cálculo de totales actuales teniendo en cuenta ediciones y exclusiones
   const activeItems = editedItems.filter((i) => !i.isExcluded);
-  const validItems = activeItems.filter(
-    (i) => !i.status.startsWith("ERROR_") && i.requestedQuantity > 0
+  const incompatibleItems = activeItems.filter(
+    (i) => i.status === "WARNING_INCOMPATIBLE_SUPPLIER" || Boolean(i.supplierMismatch)
   );
-  const warningItems = activeItems.filter((i) => i.status.startsWith("WARNING_"));
+  const validItems = activeItems.filter(
+    (i) =>
+      !i.status.startsWith("ERROR_") &&
+      i.status !== "WARNING_INCOMPATIBLE_SUPPLIER" &&
+      !i.supplierMismatch &&
+      i.requestedQuantity > 0
+  );
+  const warningItems = activeItems.filter(
+    (i) =>
+      i.status.startsWith("WARNING_") &&
+      i.status !== "WARNING_INCOMPATIBLE_SUPPLIER" &&
+      !i.supplierMismatch
+  );
   const errorItems = activeItems.filter((i) => i.status.startsWith("ERROR_"));
   const totalUnitsCalculated = validItems.reduce((sum, i) => sum + i.requestedQuantity, 0);
 
-  const hasBlockingErrors = errorItems.length > 0 || (previewData?.unmatchedRows && previewData.unmatchedRows.length > 0);
+  const hasBlockingErrors =
+    errorItems.length > 0 ||
+    incompatibleItems.length > 0 ||
+    (previewData?.unmatchedRows && previewData.unmatchedRows.length > 0);
   const canConfirm = validItems.length > 0 && (!hasBlockingErrors || allowPartialImport);
+
+  const excludeAllIncompatible = () => {
+    setEditedItems((prev) =>
+      prev.map((item) =>
+        item.status === "WARNING_INCOMPATIBLE_SUPPLIER" || item.supplierMismatch
+          ? { ...item, isExcluded: true }
+          : item
+      )
+    );
+  };
 
   const handleConfirmImport = async () => {
     if (!canConfirm) return;
@@ -208,8 +238,14 @@ export function ExcelImportModal({
         body: JSON.stringify({
           branch_id: branchId,
           planning_date: planningDate,
+          supplier: selectedSupplier || undefined,
           items: itemsToConfirm,
-          notes: orderNotes || selectedFile?.name || "Importado desde Excel",
+          notes:
+            orderNotes ||
+            selectedFile?.name ||
+            (selectedSupplier
+              ? `Importado desde Excel - Proveedor ${selectedSupplier}`
+              : "Importado desde Excel"),
           file_hash: previewData?.fileHash,
           idempotency_token: idempotencyToken,
         }),
@@ -243,8 +279,26 @@ export function ExcelImportModal({
 
   // Filtrado para la pestaña activa
   const displayedItems = editedItems.filter((item) => {
-    if (currentTab === "VALID") return !item.isExcluded && !item.status.startsWith("ERROR_") && item.requestedQuantity > 0;
-    if (currentTab === "WARNINGS") return !item.isExcluded && item.status.startsWith("WARNING_");
+    if (currentTab === "VALID")
+      return (
+        !item.isExcluded &&
+        !item.status.startsWith("ERROR_") &&
+        item.status !== "WARNING_INCOMPATIBLE_SUPPLIER" &&
+        !item.supplierMismatch &&
+        item.requestedQuantity > 0
+      );
+    if (currentTab === "WARNINGS")
+      return (
+        !item.isExcluded &&
+        item.status.startsWith("WARNING_") &&
+        item.status !== "WARNING_INCOMPATIBLE_SUPPLIER" &&
+        !item.supplierMismatch
+      );
+    if (currentTab === "INCOMPATIBLE")
+      return (
+        !item.isExcluded &&
+        (item.status === "WARNING_INCOMPATIBLE_SUPPLIER" || item.supplierMismatch)
+      );
     if (currentTab === "ERRORS") return !item.isExcluded && item.status.startsWith("ERROR_");
     return true; // ALL
   });
@@ -268,6 +322,22 @@ export function ExcelImportModal({
               </h2>
               <p>
                 Sucursal {branchName} · Planificación para {planningDate}
+                {selectedSupplier && (
+                  <span
+                    style={{
+                      display: "inline-block",
+                      marginLeft: "0.5rem",
+                      background: "#f0fdf4",
+                      color: "#166534",
+                      padding: "0.15rem 0.5rem",
+                      borderRadius: "4px",
+                      fontWeight: 600,
+                      fontSize: "0.8rem",
+                    }}
+                  >
+                    Alcance: Proveedor {selectedSupplier}
+                  </span>
+                )}
               </p>
             </div>
             <button
@@ -429,6 +499,12 @@ export function ExcelImportModal({
                   <strong style={{ color: "#b45309" }}>{warningItems.length} filas</strong>
                 </div>
               )}
+              {incompatibleItems.length > 0 && (
+                <div className="confirm-pill" style={{ background: "#fef2f2", borderColor: "#fecaca" }}>
+                  <span>Otro proveedor</span>
+                  <strong style={{ color: "#b91c1c" }}>{incompatibleItems.length} filas</strong>
+                </div>
+              )}
               {errorItems.length > 0 && (
                 <div className="confirm-pill" style={{ background: "#fef2f2", borderColor: "#fecaca" }}>
                   <span>Con errores</span>
@@ -489,6 +565,24 @@ export function ExcelImportModal({
                   ⚠️ Advertencias ({warningItems.length})
                 </button>
               )}
+              {incompatibleItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab("INCOMPATIBLE")}
+                  style={{
+                    padding: "0.35rem 0.75rem",
+                    borderRadius: "6px",
+                    fontSize: "0.82rem",
+                    fontWeight: currentTab === "INCOMPATIBLE" ? 700 : 500,
+                    border: "none",
+                    background: currentTab === "INCOMPATIBLE" ? "#b91c1c" : "transparent",
+                    color: currentTab === "INCOMPATIBLE" ? "#ffffff" : "#475569",
+                    cursor: "pointer",
+                  }}
+                >
+                  ⚠️ Otro proveedor ({incompatibleItems.length})
+                </button>
+              )}
               {errorItems.length > 0 && (
                 <button
                   type="button"
@@ -508,6 +602,47 @@ export function ExcelImportModal({
                 </button>
               )}
             </div>
+
+            {/* AVISO DE ARTICULOS DE OTRO PROVEEDOR */}
+            {incompatibleItems.length > 0 && (
+              <div
+                style={{
+                  background: "#fff1f2",
+                  border: "1px solid #fecdd3",
+                  borderRadius: "8px",
+                  padding: "0.75rem 1rem",
+                  fontSize: "0.85rem",
+                  color: "#9f1239",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "1rem",
+                  flexShrink: 0,
+                }}
+              >
+                <div>
+                  <strong>⚠️ Atención{selectedSupplier ? ` - Proveedor ${selectedSupplier}` : ""}:</strong> Se detectaron{" "}
+                  <strong>{incompatibleItems.length} producto(s)</strong> de otros proveedores en la planilla que no pertenecen a este pedido.
+                </div>
+                <button
+                  type="button"
+                  onClick={excludeAllIncompatible}
+                  style={{
+                    background: "#e11d48",
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: "6px",
+                    padding: "0.35rem 0.75rem",
+                    fontSize: "0.8rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Descartar filas de otros proveedores
+                </button>
+              </div>
+            )}
 
             {/* TABLA DE VISTA PREVIA */}
             <div className="confirm-modal-table-wrap" style={{ flex: 1, minHeight: "220px", maxHeight: "380px", overflowY: "auto" }}>
@@ -551,6 +686,12 @@ export function ExcelImportModal({
                       statusBadge = (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#fef3c7", color: "#92400e", fontSize: "0.75rem", fontWeight: 600 }} title={item.message}>
                           ⚠️ Prov. Directo
+                        </span>
+                      );
+                    } else if (item.status === "WARNING_INCOMPATIBLE_SUPPLIER" || item.supplierMismatch) {
+                      statusBadge = (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", padding: "0.2rem 0.5rem", borderRadius: "4px", background: "#fee2e2", color: "#991b1b", fontSize: "0.75rem", fontWeight: 600 }} title={item.message}>
+                          ⚠️ Otro prov. ({item.supplierCode || "Sin prov."})
                         </span>
                       );
                     } else if (item.status.startsWith("ERROR_")) {

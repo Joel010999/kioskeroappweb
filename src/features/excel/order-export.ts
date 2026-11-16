@@ -58,6 +58,7 @@ export type CollectRubroExportItemsParams = {
   branchId: string;
   planningDate: string;
   targetRubro?: string | null;
+  targetSupplier?: string | null;
   requestedMap?: Record<string, number>;
   selectedMap?: Record<string, boolean>;
 };
@@ -70,6 +71,7 @@ export function collectRubroExportItems(
     branchId,
     planningDate,
     targetRubro,
+    targetSupplier,
     requestedMap = {},
     selectedMap = {},
   } = params;
@@ -92,6 +94,30 @@ export function collectRubroExportItems(
         if (!isSinRubro(resolvedRubro)) continue;
       } else {
         if (resolvedRubro.trim().toLowerCase() !== targetRubro.trim().toLowerCase()) {
+          continue;
+        }
+      }
+    }
+
+    // 3b. Supplier filter if specified
+    if (targetSupplier) {
+      if (
+        targetSupplier === "__SIN_PROVEEDOR__" ||
+        targetSupplier === "SIN_PROVEEDOR" ||
+        targetSupplier === "SIN PROVEEDOR"
+      ) {
+        if (
+          item.supplier_code &&
+          item.supplier_code !== "SIN PROVEEDOR" &&
+          item.supplier_code !== "__SIN_PROVEEDOR__"
+        ) {
+          continue;
+        }
+      } else {
+        if (
+          (item.supplier_code ?? "").trim().toLowerCase() !==
+          targetSupplier.trim().toLowerCase()
+        ) {
           continue;
         }
       }

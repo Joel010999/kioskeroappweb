@@ -36,11 +36,13 @@ export type ValidatedImportItem = {
     | "WARNING_MATCHED_BY_NAME"
     | "WARNING_DUPLICATE"
     | "WARNING_DIRECT_SUPPLIER"
+    | "WARNING_INCOMPATIBLE_SUPPLIER"
     | "ERROR_NOT_FOUND"
     | "ERROR_INVALID_QTY"
     | "ERROR_AMBIGUOUS";
   message?: string;
   isExcluded?: boolean;
+  supplierMismatch?: boolean;
 };
 
 export type ImportPreviewResult = {
@@ -59,6 +61,7 @@ export type ImportPreviewResult = {
     warningRows: number;
     errorRows: number;
     totalUnits: number;
+    incompatibleSupplierRows?: number;
   };
   items: ValidatedImportItem[];
   unmatchedRows: Array<{
@@ -311,6 +314,7 @@ export function parseOrderExcel(buffer: Buffer, filename: string): {
 export async function validateExcelAgainstCatalog(
   parsedRows: ParsedExcelRow[],
   scope: Scope,
+  targetSupplier?: string,
 ): Promise<{
   summary: {
     totalRows: number;
@@ -318,6 +322,7 @@ export async function validateExcelAgainstCatalog(
     warningRows: number;
     errorRows: number;
     totalUnits: number;
+    incompatibleSupplierRows?: number;
   };
   items: ValidatedImportItem[];
   unmatchedRows: Array<{
@@ -382,6 +387,7 @@ export async function validateExcelAgainstCatalog(
   let validCount = 0;
   let warningCount = 0;
   let errorCount = 0;
+  let incompatibleSupplierCount = 0;
 
   for (const row of parsedRows) {
     if (row.error && !row.articleId && !row.rawDescription) {
@@ -460,7 +466,31 @@ export async function validateExcelAgainstCatalog(
     let status: ValidatedImportItem["status"] = "VALID";
     let message: string | undefined;
 
-    if (isDuplicate) {
+    const isSupplierMatch =
+      !targetSupplier
+        ? true
+        : targetSupplier === "__SIN_PROVEEDOR__" ||
+            targetSupplier === "SIN_PROVEEDOR" ||
+            targetSupplier === "SIN PROVEEDOR"
+          ? !matchedProd.supplier_code || matchedProd.supplier_code === "SIN PROVEEDOR"
+          : (matchedProd.supplier_code ?? "").trim().toLowerCase() === targetSupplier.trim().toLowerCase();
+
+    let supplierMismatch = false;
+
+    if (!isSupplierMatch) {
+      status = "WARNING_INCOMPATIBLE_SUPPLIER";
+      const supDesc = matchedProd.supplier_code ? `Prov. ${matchedProd.supplier_code}` : "Sin proveedor";
+      const targetDesc =
+        targetSupplier === "__SIN_PROVEEDOR__" ||
+        targetSupplier === "SIN_PROVEEDOR" ||
+        targetSupplier === "SIN PROVEEDOR"
+          ? "Sin proveedor"
+          : `Prov. ${targetSupplier}`;
+      message = `Incompatible: pertenece a ${supDesc} (se esperaba ${targetDesc})`;
+      warningCount++;
+      incompatibleSupplierCount++;
+      supplierMismatch = true;
+    } else if (isDuplicate) {
       status = "WARNING_DUPLICATE";
       message = "Código duplicado en el archivo Excel";
       warningCount++;
@@ -476,7 +506,9 @@ export async function validateExcelAgainstCatalog(
       validCount++;
     }
 
-    if (isDuplicate && matchedProd.supply_mode === "DIRECT_SUPPLIER") {
+    if (supplierMismatch && matchedProd.supply_mode === "DIRECT_SUPPLIER") {
+      message = (message ? message + " · " : "") + "Suministrado habitualmente por PROVEEDOR DIRECTO";
+    } else if (isDuplicate && matchedProd.supply_mode === "DIRECT_SUPPLIER") {
       message = (message ? message + " · " : "") + "Suministrado habitualmente por PROVEEDOR DIRECTO";
     }
 
@@ -497,6 +529,7 @@ export async function validateExcelAgainstCatalog(
       supplyMode: matchedProd.supply_mode || "UNDEFINED",
       status,
       message,
+      supplierMismatch,
     });
   }
 
@@ -507,6 +540,7 @@ export async function validateExcelAgainstCatalog(
       warningRows: warningCount,
       errorRows: errorCount,
       totalUnits,
+      incompatibleSupplierRows: incompatibleSupplierCount,
     },
     items,
     unmatchedRows,
@@ -516,23 +550,29 @@ export async function validateExcelAgainstCatalog(
 /**
  * Crea el pedido interno confirmado en PostgreSQL a partir de los artículos validados del Excel.
  */
-export async function confirmOrderFromExcel(input: {
-  scope: Scope;
-  branchId: number;
-  planningDate: string;
-  items: Array<{ article_id: number; requested_quantity: number }>;
-  notes?: string;
-  fileHash?: string;
-  idempotencyToken: string;
-  actorId: string;
-}): Promise<{
+export async function confirmOrderFromExcel(
+  input: {
+    scope: Scope;
+    branchId?: number;
+    planningDate: string;
+    items: Array<{ article_id: number; requested_quantity: number }>;
+    notes?: string;
+    fileHash?: string;
+    idempotencyToken: string;
+    actorId: string;
+    targetSupplier?: string;
+  },
+  targetSupplierParam?: string,
+): Promise<{
   id: number;
   order_number: number;
   total_units: number;
   items_count: number;
   created: boolean;
 }> {
-  const { scope, branchId, planningDate, items, notes, idempotencyToken, actorId } = input;
+  const { scope, branchId, planningDate, items, notes, idempotencyToken, actorId, targetSupplier } = input;
+  const effectiveBranchId = branchId ?? scope.branchId;
+  const effectiveTargetSupplier = targetSupplierParam || targetSupplier;
 
   const validItems = items.filter((i) => i.article_id > 0 && i.requested_quantity > 0);
   if (!validItems.length) {
@@ -580,13 +620,37 @@ export async function confirmOrderFromExcel(input: {
               COALESCE((SELECT SUM(sl.saldo) FROM stock_levels_raw sl WHERE sl.organization_id = p.organization_id AND sl.branch_id = p.branch_id AND sl.article_id = p.article_id), 0) AS stock_current
        FROM products_raw p
        WHERE p.organization_id = $1 AND p.branch_id = $2 AND p.is_present AND p.article_id = ANY($3::integer[])`,
-      [scope.organizationId ?? 1, branchId, articleIds]
+      [scope.organizationId ?? 1, effectiveBranchId, articleIds]
     );
 
     const catalogMap = new Map(catalogRes.rows.map((r) => [r.article_id, r]));
 
+    // Validar compatibilidad de proveedor si el pedido está restringido a un proveedor
+    if (effectiveTargetSupplier) {
+      for (const item of validItems) {
+        const prod = catalogMap.get(item.article_id);
+        const prodSup = prod?.supplier_code;
+        const matches =
+          effectiveTargetSupplier === "__SIN_PROVEEDOR__" ||
+          effectiveTargetSupplier === "SIN_PROVEEDOR" ||
+          effectiveTargetSupplier === "SIN PROVEEDOR"
+            ? !prodSup || prodSup === "SIN PROVEEDOR"
+            : (prodSup ?? "").trim().toLowerCase() === effectiveTargetSupplier.trim().toLowerCase();
+        if (!matches) {
+          throw new RequestValidationError(
+            `El artículo ${item.article_id} (${prod?.description ?? "Desconocido"}) pertenece al proveedor ${prodSup ?? "Sin proveedor"} y no puede confirmarse en un pedido del proveedor ${effectiveTargetSupplier}.`,
+          );
+        }
+      }
+    }
+
     // 3. Insertar orden con tipo INTERNAL_REPLENISHMENT y estado CONFIRMED
-    const orderNotes = notes ? `Importado desde Excel: ${notes}` : "Pedido importado desde Excel";
+    const supplierSuffix = effectiveTargetSupplier
+      ? ` - Proveedor ${effectiveTargetSupplier}`
+      : " - Pedido General";
+    const orderNotes = notes
+      ? `Importado desde Excel: ${notes}${supplierSuffix}`
+      : `Pedido importado desde Excel${supplierSuffix}`;
 
     const insertOrderRes = await client.query<{ id: string; order_number?: string }>(
       `INSERT INTO orders (
@@ -599,7 +663,7 @@ export async function confirmOrderFromExcel(input: {
       [
         scope.organizationId ?? 1,
         scope.sourceId,
-        branchId,
+        effectiveBranchId,
         planningDate,
         idempotencyKey,
         orderNotes,
@@ -637,11 +701,15 @@ export async function confirmOrderFromExcel(input: {
           order_type: "INTERNAL_REPLENISHMENT",
           planning_date: planningDate,
           items_count: validItems.length,
+          supplier: effectiveTargetSupplier ?? null,
+          scope: effectiveTargetSupplier ? "SUPPLIER" : "GENERAL",
         }),
         JSON.stringify({
-          origin_branch_id: branchId,
+          origin_branch_id: effectiveBranchId,
           destination_branch_id: DEPOT_BRANCH_ID,
           confirmed_via: "EXCEL_IMPORT",
+          supplier: effectiveTargetSupplier ?? null,
+          scope: effectiveTargetSupplier ? "SUPPLIER" : "GENERAL",
         }),
         actorId,
       ]

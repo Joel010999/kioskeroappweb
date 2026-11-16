@@ -19,6 +19,7 @@ export async function confirmInternalReplenishment(input: {
   items: RequestItem[];
   actorId: string;
   idempotencyToken: string;
+  targetSupplier?: string;
 }) {
   const requested = new Map(
     input.items
@@ -46,6 +47,32 @@ export async function confirmInternalReplenishment(input: {
       );
     return { ...row, requestedQuantity };
   });
+
+  // Strict backend validation: If an order is prepared for a specific supplier,
+  // reject any item belonging to another supplier.
+  if (input.targetSupplier) {
+    for (const item of items) {
+      if (
+        input.targetSupplier === "__SIN_PROVEEDOR__" ||
+        input.targetSupplier === "SIN_PROVEEDOR" ||
+        input.targetSupplier === "SIN PROVEEDOR"
+      ) {
+        if (
+          item.supplier_code &&
+          item.supplier_code !== "SIN PROVEEDOR" &&
+          item.supplier_code !== "__SIN_PROVEEDOR__"
+        ) {
+          throw new RequestValidationError(
+            `El artículo ${item.article_id} (${item.description}) pertenece al proveedor ${item.supplier_code} y no puede confirmarse en un pedido sin proveedor.`,
+          );
+        }
+      } else if (item.supplier_code !== input.targetSupplier) {
+        throw new RequestValidationError(
+          `El artículo ${item.article_id} (${item.description}) pertenece al proveedor ${item.supplier_code ?? "Sin proveedor"} y no puede confirmarse en un pedido del proveedor ${input.targetSupplier}.`,
+        );
+      }
+    }
+  }
   return withTransaction(async (client) => {
     const rules = await client.query<{
       article_id: number;
@@ -86,8 +113,12 @@ export async function confirmInternalReplenishment(input: {
     if (existing.rows[0])
       return { id: Number(existing.rows[0].id), created: false };
 
+    const orderNotes = input.targetSupplier
+      ? `Solicitud semanal PV a depósito - Proveedor ${input.targetSupplier}`
+      : "Solicitud semanal PV a depósito - Pedido General";
+
     const inserted = await client.query<{ id: string }>(
-      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),'Solicitud semanal PV a depósito',$7,$7) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id`,
+      `INSERT INTO orders (organization_id,source_id,branch_id,status,order_type,origin_branch_id,destination_branch_id,planning_date,idempotency_key,confirmed_at,notes,created_by,confirmed_by) VALUES ($1,$2,$3,'CONFIRMED','INTERNAL_REPLENISHMENT',$3,$4,$5,$6,now(),$7,$8,$8) ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id`,
       [
         input.scope.organizationId,
         input.scope.sourceId,
@@ -95,6 +126,7 @@ export async function confirmInternalReplenishment(input: {
         DEPOT_BRANCH_ID,
         input.planningDate,
         idempotencyKey,
+        orderNotes,
         input.actorId,
       ],
     );
@@ -113,10 +145,14 @@ export async function confirmInternalReplenishment(input: {
         JSON.stringify({
           order_type: "INTERNAL_REPLENISHMENT",
           planning_date: input.planningDate,
+          supplier: input.targetSupplier ?? null,
+          scope: input.targetSupplier ? "SUPPLIER" : "GENERAL",
         }),
         JSON.stringify({
           origin_branch_id: input.scope.branchId,
           destination_branch_id: DEPOT_BRANCH_ID,
+          supplier: input.targetSupplier ?? null,
+          scope: input.targetSupplier ? "SUPPLIER" : "GENERAL",
         }),
         input.actorId,
       ],

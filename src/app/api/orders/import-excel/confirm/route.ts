@@ -28,6 +28,8 @@ export async function POST(request: NextRequest) {
       notes?: unknown;
       file_hash?: unknown;
       idempotency_token?: unknown;
+      supplier?: unknown;
+      target_supplier?: unknown;
     };
 
     const branchId = parseOptionalPositiveInteger(String(input.branch_id ?? ""), "branch_id");
@@ -37,6 +39,9 @@ export async function POST(request: NextRequest) {
     );
     const idempotencyToken =
       typeof input.idempotency_token === "string" ? input.idempotency_token : null;
+    const rawSupplier = input.supplier ?? input.target_supplier;
+    const targetSupplier =
+      typeof rawSupplier === "string" && rawSupplier.trim() ? rawSupplier.trim() : undefined;
 
     if (!branchId || !planningDate || !idempotencyToken || !Array.isArray(input.items)) {
       throw new RequestValidationError(
@@ -78,6 +83,7 @@ export async function POST(request: NextRequest) {
       fileHash: typeof input.file_hash === "string" ? input.file_hash : undefined,
       idempotencyToken,
       actorId: String(context.userId),
+      targetSupplier,
     });
 
     return result;
