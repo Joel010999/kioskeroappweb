@@ -47,6 +47,29 @@ export function isIrregularWeeklyDemand(medianDemand: number, maxDemand: number)
   return maxDemand - medianDemand >= 20 && (medianDemand === 0 ? maxDemand >= 20 : maxDemand >= medianDemand * 3);
 }
 
+export type WindowDemandMetrics = {
+  activeWeeks: number;
+  weeklyDemand: number;
+  weeklyAverage: number;
+  weeklyMax: number;
+  weeklyMin: number;
+};
+
+/**
+ * Selecciona la tupla completa de métricas de la ventana ganadora (actual vs interanual YoY)
+ * para garantizar coherencia entre weeklyDemand, activeWeeks, weeklyAverage, weeklyMax y weeklyMin.
+ * En caso de empate, se prioriza la ventana actual.
+ */
+export function selectWinningDemandWindow(
+  current: WindowDemandMetrics,
+  yoy: WindowDemandMetrics | null | undefined,
+): WindowDemandMetrics & { source: "CURRENT" | "YOY" } {
+  if (yoy && yoy.weeklyDemand > current.weeklyDemand) {
+    return { ...yoy, source: "YOY" };
+  }
+  return { ...current, source: "CURRENT" };
+}
+
 export function weeklyDecision(input: {
   currentStock: number;
   activeWeeks: number;

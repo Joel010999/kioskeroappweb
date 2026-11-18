@@ -297,11 +297,34 @@ function buildWeeklyReplenishmentQuery(params: {
       FROM active_articles a CROSS JOIN weeks w LEFT JOIN sales s ON s.article_id = a.article_id AND s.week_start = w.week_start
       GROUP BY a.article_id
     ), yoy_metrics AS (
-      SELECT a.article_id, percentile_cont(.5) WITHIN GROUP (ORDER BY COALESCE(s.quantity, 0)) AS weekly_demand_yoy
+      SELECT a.article_id,
+        COUNT(*) FILTER (WHERE COALESCE(s.quantity, 0) > 0) AS yoy_active_weeks,
+        percentile_cont(.5) WITHIN GROUP (ORDER BY COALESCE(s.quantity, 0)) AS weekly_demand_yoy,
+        AVG(COALESCE(s.quantity, 0)) AS weekly_average_yoy,
+        MAX(COALESCE(s.quantity, 0)) AS weekly_max_yoy,
+        MIN(COALESCE(s.quantity, 0)) AS weekly_min_yoy
       FROM active_articles a CROSS JOIN yoy_weeks w LEFT JOIN sales s ON s.article_id = a.article_id AND s.week_start = w.week_start
       GROUP BY a.article_id
     ), metrics AS (
-      SELECT cm.article_id, cm.active_weeks, GREATEST(cm.weekly_demand, COALESCE(ym.weekly_demand_yoy, 0)) AS weekly_demand, cm.weekly_average, cm.weekly_max, cm.weekly_min
+      SELECT
+        cm.article_id,
+        CASE WHEN COALESCE(ym.weekly_demand_yoy, 0) > cm.weekly_demand
+          THEN COALESCE(ym.yoy_active_weeks, 0)
+          ELSE cm.active_weeks
+        END AS active_weeks,
+        GREATEST(cm.weekly_demand, COALESCE(ym.weekly_demand_yoy, 0)) AS weekly_demand,
+        CASE WHEN COALESCE(ym.weekly_demand_yoy, 0) > cm.weekly_demand
+          THEN COALESCE(ym.weekly_average_yoy, 0)
+          ELSE cm.weekly_average
+        END AS weekly_average,
+        CASE WHEN COALESCE(ym.weekly_demand_yoy, 0) > cm.weekly_demand
+          THEN COALESCE(ym.weekly_max_yoy, 0)
+          ELSE cm.weekly_max
+        END AS weekly_max,
+        CASE WHEN COALESCE(ym.weekly_demand_yoy, 0) > cm.weekly_demand
+          THEN COALESCE(ym.weekly_min_yoy, 0)
+          ELSE cm.weekly_min
+        END AS weekly_min
       FROM current_metrics cm LEFT JOIN yoy_metrics ym ON ym.article_id = cm.article_id
     ), items_base AS (
       SELECT
