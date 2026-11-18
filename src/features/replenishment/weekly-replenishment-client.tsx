@@ -6,6 +6,7 @@ import {
   branchDisplayName,
   OperationsNavigation,
 } from "@/features/navigation/operations-navigation";
+import { getNextPlanningSaturday } from "@/server/analytics/weekly-replenishment-rules";
 
 type Status =
   | "SUGGESTION_AVAILABLE"
@@ -63,12 +64,7 @@ const filterOptions = [
 ] as const;
 
 function saturday(): string {
-  const now = new Date();
-  const date = new Date(
-    Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()),
-  );
-  date.setUTCDate(date.getUTCDate() + ((6 - date.getUTCDay() + 7) % 7));
-  return date.toISOString().slice(0, 10);
+  return getNextPlanningSaturday();
 }
 
 export function WeeklyReplenishmentClient({

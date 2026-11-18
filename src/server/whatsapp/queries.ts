@@ -3,6 +3,7 @@ import type { Period, Scope } from "@/server/analytics/types";
 import { getAttention, getDataHealth, getOverview, getStock, getTopProducts } from "@/server/analytics/dashboard";
 import { getOrder, listOrders, listWarehouseOrders } from "@/server/orders/repository";
 import { DEPOT_BRANCH_ID, getWeeklyReplenishment } from "@/server/analytics/weekly-replenishment";
+import { getNextPlanningSaturday } from "@/server/analytics/weekly-replenishment-rules";
 import { getSourceForBranch } from "@/server/auth/sources";
 import {
   generateInventoryExcelBuffer,
@@ -755,7 +756,7 @@ export async function queryReplenishment(
   const now = getServerTime();
   const depotProv = await getBranchProvenance(DEPOT_BRANCH_ID, orgId, now);
 
-  const planningDate = "2026-10-24"; // Next planning cycle Saturday
+  const planningDate = getNextPlanningSaturday(now);
 
   const replenishment = await getWeeklyReplenishment({
     scope,
@@ -865,7 +866,8 @@ export async function queryReplenishmentExcelData(
 
   const scope = await resolveScope(branchId);
   const depotScope = await resolveScope(DEPOT_BRANCH_ID);
-  const planningDate = "2026-10-24";
+  const now = getServerTime();
+  const planningDate = getNextPlanningSaturday(now);
   const branchName = branchId === 2 ? "Centro" : branchId === 3 ? "Jardín" : `Sucursal ${branchId}`;
 
   // Query all items for this rubro/supplier across all pages without silent truncation

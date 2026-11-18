@@ -13,6 +13,7 @@ import {
   type ReplenishmentExportItem,
 } from "@/features/excel/order-export";
 import { isSinRubro } from "@/server/catalog/rubros";
+import { getNextPlanningSaturday } from "@/server/analytics/weekly-replenishment-rules";
 import { ExcelImportModal } from "@/features/orders/excel-import-modal";
 
 type Status =
@@ -160,12 +161,7 @@ const filters: Array<[Filter, string]> = [
 ];
 
 function nextSaturday() {
-  const now = new Date();
-  const date = new Date(
-    Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()),
-  );
-  date.setUTCDate(date.getUTCDate() + ((6 - date.getUTCDay() + 7) % 7));
-  return date.toISOString().slice(0, 10);
+  return getNextPlanningSaturday();
 }
 function requestedKey(
   branchId: string,

@@ -6,6 +6,7 @@ import { queryReplenishmentExcelData } from "./queries";
 import { processIncomingMessage } from "./processor";
 import { clearMemoryDeduplicationCache } from "./deduplication";
 import { formatGreetingMessage } from "./formatters";
+import { getNextPlanningSaturday } from "@/server/analytics/weekly-replenishment-rules";
 import type { getWeeklyReplenishment } from "@/server/analytics/weekly-replenishment";
 
 // Mock DB client to avoid network timeouts during unit tests
@@ -580,7 +581,8 @@ describe("WhatsApp Bot — Excel Replenishment by Rubro", () => {
 
       const [to, docOptions] = mockSendDoc.mock.calls[0];
       expect(to).toBe(testPhone);
-      expect(docOptions.fileName).toBe("REPOSICION_CHOCOLATES_CENTRO_2026-10-24.xlsx");
+      const expectedPlanningDate = getNextPlanningSaturday();
+      expect(docOptions.fileName).toBe(`REPOSICION_CHOCOLATES_CENTRO_${expectedPlanningDate}.xlsx`);
       expect(docOptions.mimetype).toBe(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );

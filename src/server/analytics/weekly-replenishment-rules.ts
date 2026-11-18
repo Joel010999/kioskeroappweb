@@ -35,6 +35,36 @@ export function depotStockState(stock: number | null): DepotStockState {
 
 export const REPLENISHMENT_COVERAGE_DAYS = 10;
 export const DAYS_IN_WEEK = 7;
+export const PLANNING_TIMEZONE = "America/Argentina/Buenos_Aires";
+
+/**
+ * Calcula la fecha de planificación semanal (YYYY-MM-DD) correspondiente al próximo sábado
+ * según el calendario de Argentina (America/Argentina/Buenos_Aires).
+ *
+ * Regla consistente entre Web, Excel y Bot de WhatsApp:
+ * - Si hoy es sábado en Argentina, corresponde ese mismo sábado (+0 días).
+ * - Domingo -> +6 días; Lunes -> +5; ... Viernes -> +1.
+ */
+export function getNextPlanningSaturday(
+  referenceDate: Date = new Date(),
+  timeZone: string = PLANNING_TIMEZONE,
+): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(referenceDate);
+
+  const year = Number(parts.find((p) => p.type === "year")?.value);
+  const month = Number(parts.find((p) => p.type === "month")?.value);
+  const day = Number(parts.find((p) => p.type === "day")?.value);
+
+  const localCalendarUtc = new Date(Date.UTC(year, month - 1, day));
+  const daysUntilSaturday = (6 - localCalendarUtc.getUTCDay() + 7) % 7;
+  localCalendarUtc.setUTCDate(localCalendarUtc.getUTCDate() + daysUntilSaturday);
+  return localCalendarUtc.toISOString().slice(0, 10);
+}
 
 export function calculateTargetStock(
   weeklyDemand: number,
